@@ -588,6 +588,7 @@ jobs:
               echo '    BBR_PHASE_PROBE_RTT=3, BBR_PHASE_PROBE_BW_UP=4, BBR_PHASE_PROBE_BW_DOWN=5,'
               echo '    BBR_PHASE_PROBE_BW_CRUISE=6, BBR_PHASE_PROBE_BW_REFILL=7,'
               echo '};'
+              echo 'static u32 bbr_garbage;'
               echo '#endif'
               } > net/ipv4/bbr_compat.h
 
@@ -618,17 +619,11 @@ jobs:
               sed -i 's/rs\.lost/0/g' "$F"
               sed -i 's/READ_ONCE(net->ipv4\.sysctl_tcp_plb_enabled)/false/g' "$F"
               
-              # 先删除赋值行（匹配任何包含 = 的行），避免 0 = 0 错误
-              sed -i '/scb->tx\.in_flight.*=/d' "$F"
-              sed -i '/scb->tx\.lost.*=/d' "$F"
-              sed -i '/TCP_SKB_CB(skb)->tx\.lost.*=/d' "$F"
-              sed -i '/TCP_SKB_CB(skb)->tx\.in_flight.*=/d' "$F"
-              
-              # 再替换剩余引用（右值）
-              sed -i 's/scb->tx\.in_flight/0/g' "$F"
-              sed -i 's/scb->tx\.lost/0/g' "$F"
-              sed -i 's/TCP_SKB_CB(skb)->tx\.lost/0/g' "$F"
-              sed -i 's/TCP_SKB_CB(skb)->tx\.in_flight/0/g' "$F"
+              # 使用垃圾桶变量替换，避免赋值错误 (如 0 = 0)
+              sed -i 's/scb->tx\.in_flight/bbr_garbage/g' "$F"
+              sed -i 's/scb->tx\.lost/bbr_garbage/g' "$F"
+              sed -i 's/TCP_SKB_CB(skb)->tx\.lost/bbr_garbage/g' "$F"
+              sed -i 's/TCP_SKB_CB(skb)->tx\.in_flight/bbr_garbage/g' "$F"
               sed -i 's/rs->is_acking_tlp_retrans_seq/0/g' "$F"
 
               # delivered_ce / is_ece

@@ -600,7 +600,7 @@ jobs:
               sed -i '/struct tcp_plb_state plb;/d' "$F"
               sed -i '/u8.*unused_4/d' "$F"
               sed -i 's/\&bbr->plb/NULL/g' "$F"
-              sed -i 's/bbr->plb\.pause_until/0/g' "$F"
+              sed -i 's/bbr->plb\.pause_until/bbr_garbage/g' "$F"
 
               # 替换 include
               sed -i 's|#include "tcp_dctcp.h"|#include "bbr_compat.h"|' "$F"
@@ -620,8 +620,11 @@ jobs:
               sed -i 's/READ_ONCE(net->ipv4\.sysctl_tcp_plb_enabled)/false/g' "$F"
               
               # 使用垃圾桶变量替换，避免赋值错误 (如 0 = 0)
+              # 同时兼容 .in_flight (旧代码?) 和 _in_flight (Google BBRv3)
               sed -i 's/scb->tx\.in_flight/bbr_garbage/g' "$F"
+              sed -i 's/scb->tx_in_flight/bbr_garbage/g' "$F"
               sed -i 's/scb->tx\.lost/bbr_garbage/g' "$F"
+              sed -i 's/scb->tx_lost/bbr_garbage/g' "$F"
               sed -i 's/TCP_SKB_CB(skb)->tx\.lost/bbr_garbage/g' "$F"
               sed -i 's/TCP_SKB_CB(skb)->tx\.in_flight/bbr_garbage/g' "$F"
               sed -i 's/rs->is_acking_tlp_retrans_seq/0/g' "$F"
@@ -629,7 +632,7 @@ jobs:
               # delivered_ce / is_ece
               if ! grep -q 'delivered_ce' include/net/tcp.h 2>/dev/null; then
                 sed -i 's/rs->delivered_ce/0/g; s/rs\.delivered_ce/0/g' "$F"
-                sed -i 's/tp->delivered_ce/0/g' "$F"
+                sed -i 's/tp->delivered_ce/bbr_garbage/g' "$F"
               fi
               if ! grep -q 'is_ece' include/net/tcp.h 2>/dev/null; then
                 sed -i 's/rs->is_ece/0/g' "$F"
@@ -637,7 +640,7 @@ jobs:
 
               # 其他兼容性修复
               sed -i '/fast_ack_mode/d' "$F"
-              sed -i 's/tp->tlp_orig_data_app_limited/0/' "$F"
+              sed -i 's/tp->tlp_orig_data_app_limited/bbr_garbage/' "$F"
               sed -i '/\.skb_marked_lost/d' "$F"
               sed -i '/BTF_ID_FLAGS(func, bbr_skb_marked_lost)/d' "$F"
 

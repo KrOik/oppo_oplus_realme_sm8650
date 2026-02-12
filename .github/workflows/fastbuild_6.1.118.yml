@@ -697,7 +697,7 @@ jobs:
           cd kernel_workspace
           echo "CONFIG_RCU_EXPERT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_RCU_LAZY=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "# CONFIG_RCU_LAZY_DEFAULT_OFF is not set" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_RCU_LAZY_DEFAULT_OFF=n" >> ./common/arch/arm64/configs/gki_defconfig
 
       - name: Enable WQ Power Efficient
         if: inputs.wq_power_efficient_enable

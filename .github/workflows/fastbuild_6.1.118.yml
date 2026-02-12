@@ -615,6 +615,14 @@ jobs:
               sed -i 's/rs->lost/0/g' "$F"
               sed -i 's/rs\.lost/0/g' "$F"
               sed -i 's/READ_ONCE(net->ipv4\.sysctl_tcp_plb_enabled)/false/g' "$F"
+              
+              # 先删除赋值行，避免 0 = 0 错误
+              sed -i '/scb->tx\.in_flight[[:space:]]*=/d' "$F"
+              sed -i '/scb->tx\.lost[[:space:]]*=/d' "$F"
+              sed -i '/TCP_SKB_CB(skb)->tx\.lost[[:space:]]*=/d' "$F"
+              sed -i '/TCP_SKB_CB(skb)->tx\.in_flight[[:space:]]*=/d' "$F"
+              
+              # 再替换剩余引用（右值）
               sed -i 's/scb->tx\.in_flight/0/g' "$F"
               sed -i 's/scb->tx\.lost/0/g' "$F"
               sed -i 's/TCP_SKB_CB(skb)->tx\.lost/0/g' "$F"

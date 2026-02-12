@@ -547,6 +547,8 @@ jobs:
             echo "CONFIG_TCP_CONG_BBR=y" >> ./common/arch/arm64/configs/gki_defconfig
             if [[ "${{ github.event.inputs.bbr_variant }}" == "bbrv3" ]]; then
               echo "::notice::Building BBRv3 compat patch inline (no external patch file needed)..."
+              #由于是自托管runner，需先清理旧目录
+              rm -rf /tmp/bbrv3_src
               # 克隆 google/bbr v3 的 tcp_bbr.c
               git clone --depth 1 --branch v3 https://github.com/google/bbr.git /tmp/bbrv3_src
               cp /tmp/bbrv3_src/net/ipv4/tcp_bbr.c ./common/net/ipv4/tcp_bbr.c

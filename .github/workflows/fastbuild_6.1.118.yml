@@ -115,7 +115,7 @@ on:
         type: boolean
         default: 'false'
       autofdo_enable:
-        description: '是否启用 AutoFDO(需要提供 profile；不提供则仅检查/开启Kconfig)'
+        description: '是否启用 AutoFDO(需要提供 profile；未提供则不启用)'
         required: true
         type: boolean
         default: 'false'
@@ -548,7 +548,7 @@ jobs:
               append_defconfig "CONFIG_KEXEC_FILE" "y"
             fi
           fi
-          if [[ "${{ github.event.inputs.autofdo_enable }}" == "true" ]]; then
+          if [[ "${{ github.event.inputs.autofdo_enable }}" == "true" && -n "${{ github.event.inputs.autofdo_profile_url }}" ]]; then
             enable_symbol_or_die "AUTOFDO_CLANG" "y" "AutoFDO"
           fi
           

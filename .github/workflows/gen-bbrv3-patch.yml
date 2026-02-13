@@ -5,7 +5,7 @@ on:
 
 jobs:
   gen:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Clone oneplus12 base
         run: |

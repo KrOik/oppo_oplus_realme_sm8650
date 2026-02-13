@@ -32,6 +32,10 @@ read -p "是否添加 BBR 等一系列拥塞控制算法？(y添加/n禁用/d默
 APPLY_BBR=${APPLY_BBR:-n}
 read -p "是否替换为 BBRv3（Google BBR v3 分支 tcp_bbr.c）？(y/n，默认：n): " APPLY_BBRV3
 APPLY_BBRV3=${APPLY_BBRV3:-n}
+if [[ "$APPLY_BBRV3" == [yY] && "$APPLY_BBR" == [nN] ]]; then
+  echo ">>> 已启用 BBRv3，强制启用 BBR 配置"
+  APPLY_BBR="y"
+fi
 read -p "是否启用 lazy rcu？(y/n，默认：y): " APPLY_LAZY_RCU
 APPLY_LAZY_RCU=${APPLY_LAZY_RCU:-y}
 read -p "是否启用 WQ power efficient default？(y/n，默认：y): " APPLY_WQ_EFFICIENT

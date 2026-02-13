@@ -84,6 +84,46 @@ on:
         required: false
         type: string
         default: ''
+      multi_manager:
+        description: '是否启用多管理器支持(兼容 WildKSU/部分管理器签名校验)'
+        required: true
+        type: boolean
+        default: 'true'
+      lazy_rcu:
+        description: '是否启用 lazy rcu(节能回调批处理，依赖RCU_NOCB_CPU)'
+        required: true
+        type: boolean
+        default: 'true'
+      wq_power_efficient:
+        description: '是否启用 WQ power efficient default(使用 system_power_efficient_wq 等默认节能WQ)'
+        required: true
+        type: boolean
+        default: 'true'
+      zram_writeback:
+        description: '是否启用 zram 回写(writeback)支持(需要内核支持ZRAM_WRITEBACK)'
+        required: true
+        type: boolean
+        default: 'true'
+      kexec_enable:
+        description: '是否启用 kexec 内核热切换支持'
+        required: true
+        type: boolean
+        default: 'true'
+      bbrv3_enable:
+        description: '是否替换为 Google BBRv3(替换 tcp_bbr.c，上游google/bbr v3 分支)'
+        required: true
+        type: boolean
+        default: 'false'
+      autofdo_enable:
+        description: '是否启用 AutoFDO(需要提供 profile；不提供则仅检查/开启Kconfig)'
+        required: true
+        type: boolean
+        default: 'false'
+      autofdo_profile_url:
+        description: 'AutoFDO profile 下载链接(可选，需为可直链下载文件)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   build:
@@ -102,7 +142,7 @@ jobs:
           sudo apt purge man-db &&
           sudo rm -rf /var/lib/man-db/auto-update &&
           sudo apt update &&
-          sudo apt-get install -y --no-install-recommends binutils python-is-python3 libssl-dev libelf-dev ccache &
+          sudo apt-get install -y --no-install-recommends binutils python-is-python3 libssl-dev libelf-dev ccache wget patch &
           #旧版完整指令：（由于经过验证大部分指令已内置于GitHub Action环境中，故进行精简）
           #sudo apt-get install -y --no-install-recommends curl bison flex make binutils git perl gcc python3 python-is-python3 bc libssl-dev libelf-dev zip unzip ccache
           
@@ -260,10 +300,11 @@ jobs:
             sed -i "s/KSU_VERSION_FALLBACK := 1/KSU_VERSION_FALLBACK := $KSU_VERSION/g" kernel/Kbuild
             KSU_GIT_TAG=$(curl -sL "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/tags" | grep -o '"name": *"[^"]*"' | head -n 1 | sed 's/"name": "//;s/"//')
             sed -i "s/KSU_VERSION_TAG_FALLBACK := v0.0.1/KSU_VERSION_TAG_FALLBACK := $KSU_GIT_TAG/g" kernel/Kbuild
-            #为KernelSU Next添加WildKSU管理器支持
-            cd ../common/drivers/kernelsu
-            wget https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/other_patch/apk_sign.patch
-            patch -p2 -N -F 3 < apk_sign.patch || true
+            if [[ "${{ github.event.inputs.multi_manager }}" == "true" ]]; then
+              cd ../common/drivers/kernelsu
+              wget https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/other_patch/apk_sign.patch
+              patch -p2 -N -F 3 < apk_sign.patch || true
+            fi
           elif [[ ${{ github.event.inputs.ksu_type }} == "mksu" ]]; then
             echo "正在配置 MKSU (5ec1cff/KernelSU)..."
             curl -LSs "https://raw.githubusercontent.com/5ec1cff/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s main
@@ -282,6 +323,16 @@ jobs:
             sed -i "s/DKSU_VERSION=16/DKSU_VERSION=${KSU_VERSION}/" kernel/Kbuild
           else
             echo "已选择无内置KernelSU模式，跳过KernelSU配置..."
+          fi
+
+      - name: 应用多管理器支持补丁
+        if: inputs.multi_manager
+        run: |
+          cd kernel_workspace
+          if [ -d ./common/drivers/kernelsu ]; then
+            cd ./common/drivers/kernelsu
+            wget https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/other_patch/apk_sign.patch
+            patch -p2 -N -F 3 < apk_sign.patch || true
           fi
 
       - name: 应用 KernelSU & SUSFS 补丁
@@ -412,6 +463,22 @@ jobs:
           cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./crypto
           cp ../SukiSU_patch/other/zram/zram_patch/${{ env.KERNEL_VERSION }}/lz4kd.patch ./
           patch -p1 -F 3 < lz4kd.patch || true
+
+      - name: 应用 BBRv3
+        if: inputs.bbrv3_enable
+        run: |
+          cd kernel_workspace
+          rm -rf google_bbr_v3
+          git clone --depth=1 -b v3 https://github.com/google/bbr.git google_bbr_v3
+          if [[ ! -f google_bbr_v3/net/ipv4/tcp_bbr.c ]]; then
+            echo "未找到 google/bbr(v3) 的 net/ipv4/tcp_bbr.c"
+            exit 1
+          fi
+          if [[ ! -f common/net/ipv4/tcp_bbr.c ]]; then
+            echo "未找到当前内核源码的 common/net/ipv4/tcp_bbr.c"
+            exit 1
+          fi
+          cp google_bbr_v3/net/ipv4/tcp_bbr.c common/net/ipv4/tcp_bbr.c
           
       - name: 添加SUSFS 配置项
         if: inputs.susfs_enable
@@ -436,29 +503,54 @@ jobs:
       - name: 添加 KSU & 其他配置项
         run: |
           cd kernel_workspace
-          echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
+          DEFCONFIG=./common/arch/arm64/configs/gki_defconfig
+          append_defconfig() { local k="$1"; local v="$2"; grep -q "^${k}=" "$DEFCONFIG" || echo "${k}=${v}" >> "$DEFCONFIG"; }
+          has_kconfig_symbol() { local sym="$1"; grep -Rqs "^[[:space:]]*config[[:space:]]\+${sym}\b" ./common; }
+          enable_symbol_or_die() { local sym="$1"; local val="$2"; local display="$3"; if has_kconfig_symbol "$sym"; then append_defconfig "CONFIG_${sym}" "$val"; else echo "缺少 CONFIG_${sym}：${display}"; exit 1; fi; }
+
+          append_defconfig "CONFIG_KSU" "y"
           if [[ ${{ github.event.inputs.kpm_enable }} == 'builtin' && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "resukisu" ) ]]; then
-            echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
+            append_defconfig "CONFIG_KPM" "y"
           fi
           if [[ "${{ github.event.inputs.susfs_enable }}" == "false" ]]; then
-            echo "CONFIG_KSU_SUSFS=n" >> ./common/arch/arm64/configs/gki_defconfig
+            append_defconfig "CONFIG_KSU_SUSFS" "n"
           fi
-          #添加对 Mountify (backslashxx/mountify) 模块的支持
-          echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
+          append_defconfig "CONFIG_TMPFS_XATTR" "y"
+          append_defconfig "CONFIG_TMPFS_POSIX_ACL" "y"
           if [[ ${{ github.event.inputs.lz4kd_enable }} == 'true' ]]; then
-            echo "CONFIG_ZSMALLOC=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_CRYPTO_LZ4HC=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_CRYPTO_LZ4K=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_CRYPTO_LZ4KD=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_CRYPTO_842=y" >> ./common/arch/arm64/configs/gki_defconfig
+            append_defconfig "CONFIG_ZSMALLOC" "y"
+            append_defconfig "CONFIG_CRYPTO_LZ4HC" "y"
+            append_defconfig "CONFIG_CRYPTO_LZ4K" "y"
+            append_defconfig "CONFIG_CRYPTO_LZ4KD" "y"
+            append_defconfig "CONFIG_CRYPTO_842" "y"
           fi
-          # 开启O2编译优化配置
-          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./common/arch/arm64/configs/gki_defconfig
-          #禁用 defconfig 检查
+          append_defconfig "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE" "y"
           sed -i 's/check_defconfig//' ./common/build.config.gki
-          #跳过将uapi标准头安装到 usr/include 目录的不必要操作，节省编译时间
-          echo "CONFIG_HEADERS_INSTALL=n" >> ./common/arch/arm64/configs/gki_defconfig
+          append_defconfig "CONFIG_HEADERS_INSTALL" "n"
+
+          if [[ "${{ github.event.inputs.lazy_rcu }}" == "true" ]]; then
+            enable_symbol_or_die "RCU_NOCB_CPU" "y" "lazy rcu 依赖 RCU_NOCB_CPU"
+            enable_symbol_or_die "RCU_LAZY" "y" "lazy rcu"
+          fi
+          if [[ "${{ github.event.inputs.wq_power_efficient }}" == "true" ]]; then
+            enable_symbol_or_die "WQ_POWER_EFFICIENT_DEFAULT" "y" "wq power efficient default"
+          fi
+          if [[ "${{ github.event.inputs.zram_writeback }}" == "true" ]]; then
+            enable_symbol_or_die "ZRAM" "y" "zram writeback 依赖 ZRAM"
+            enable_symbol_or_die "ZRAM_WRITEBACK" "y" "zram writeback"
+            if has_kconfig_symbol "ZRAM_MEMORY_TRACKING"; then
+              append_defconfig "CONFIG_ZRAM_MEMORY_TRACKING" "y"
+            fi
+          fi
+          if [[ "${{ github.event.inputs.kexec_enable }}" == "true" ]]; then
+            enable_symbol_or_die "KEXEC" "y" "kexec 热切换"
+            if has_kconfig_symbol "KEXEC_FILE"; then
+              append_defconfig "CONFIG_KEXEC_FILE" "y"
+            fi
+          fi
+          if [[ "${{ github.event.inputs.autofdo_enable }}" == "true" ]]; then
+            enable_symbol_or_die "AUTOFDO_CLANG" "y" "AutoFDO"
+          fi
           
       - name: 启用网络功能增强优化配置
         if: inputs.better_net
@@ -647,8 +739,15 @@ jobs:
           sudo rm -rf /usr/local/lib/android &
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig &&
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
+          AUTOFDO_OPT=""
+          if [[ "${{ github.event.inputs.autofdo_enable }}" == "true" ]]; then
+            if [[ -n "${{ github.event.inputs.autofdo_profile_url }}" ]]; then
+              aria2c -s16 -x16 -k1M "${{ github.event.inputs.autofdo_profile_url }}" -o kernel.afdo
+              AUTOFDO_OPT="CLANG_AUTOFDO_PROFILE=$(pwd)/kernel.afdo"
+            fi
+          fi
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error $AUTOFDO_OPT gki_defconfig &&
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error $AUTOFDO_OPT Image
           
           # 编译后时间劫持二次校验
           echo "--- 编译后环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
@@ -786,6 +885,13 @@ jobs:
             - LZ4KD支持：${{ github.event.inputs.lz4kd_enable }}
             - 网络功能增强：${{ github.event.inputs.better_net }}
             - BBR/Brutal 等拥塞控制算法支持：${{ github.event.inputs.bbr_enable }}
+            - BBRv3支持：${{ github.event.inputs.bbrv3_enable }}
+            - lazy rcu：${{ github.event.inputs.lazy_rcu }}
+            - wq power efficient：${{ github.event.inputs.wq_power_efficient }}
+            - zram writeback：${{ github.event.inputs.zram_writeback }}
+            - kexec热切换：${{ github.event.inputs.kexec_enable }}
+            - AutoFDO：${{ github.event.inputs.autofdo_enable }}
+            - 多管理器支持：${{ github.event.inputs.multi_manager }}
             - 三星SSG IO调度器支持：${{ github.event.inputs.ssg_enable }}
             - Re-Kernel支持：${{ github.event.inputs.rekernel_enable }}
             - 内核级基带保护支持：${{ github.event.inputs.baseband_guard }}

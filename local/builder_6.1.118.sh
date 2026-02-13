@@ -16,8 +16,8 @@ read -p "是否启用susfs？(y/n，默认：y): " APPLY_SUSFS
 APPLY_SUSFS=${APPLY_SUSFS:-y}
 read -p "是否启用 KPM？(b-(re)sukisu内置kpm, k-kernelpatch next独立kpm实现, n-关闭kpm，默认：n): " USE_PATCH_LINUX
 USE_PATCH_LINUX=${USE_PATCH_LINUX:-n}
-read -p "KSU分支版本(y=SukiSU Ultra, r=ReSukiSU, n=KernelSU Next, m=MKSU, k=KSU, l=lkm模式(无内置KSU), 默认：y): " KSU_BRANCH
-KSU_BRANCH=${KSU_BRANCH:-y}
+read -p "KSU分支版本(y=SukiSU Ultra, r=ReSukiSU, n=KernelSU Next, m=MKSU, k=KSU, l=lkm模式(无内置KSU), 默认：r): " KSU_BRANCH
+KSU_BRANCH=${KSU_BRANCH:-r}
 read -p "是否启用多管理器支持（兼容 WildKSU/部分管理器签名校验）？(y/n，默认：y): " APPLY_MULTI_MANAGER
 APPLY_MULTI_MANAGER=${APPLY_MULTI_MANAGER:-y}
 read -p "是否应用 Oplus f2fs 免清 data 补丁（同步官方 f2fs 以兼容 data 分区）？(y/n，默认：n): " APPLY_OPLUS_F2FS

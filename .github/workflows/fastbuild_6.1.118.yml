@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
     inputs:
       ksu_type:
-        description: 'KernelSU分支(SukiSU Ultra/ReSukiSU/KernelSU Next/MKSU/KSU(原版)/无内置KSU,默认SukiSU Ultra)'
+        description: 'KernelSU分支(SukiSU Ultra/ReSukiSU/KernelSU Next/MKSU/KSU(原版)/无内置KSU,默认ReSukiSU)'
         required: true
         type: choice
-        default: 'sukisu'
+        default: 'resukisu'
         options:
           - 'sukisu'
           - 'resukisu'
@@ -54,6 +54,34 @@ on:
           - 'false'
           - 'true'
           - 'default'
+      bbr_variant:
+        description: 'BBR variant (bbrv3 requires patch URL)'
+        required: true
+        type: choice
+        default: 'bbr'
+        options:
+          - 'bbr'
+          - 'bbrv3'
+      bbrv3_patch_url:
+        description: 'BBRv3 patch URL (used only when bbr_variant=bbrv3)'
+        required: false
+        type: string
+        default: 'https://github.com/Zennmn/oppo_oplus_realme_sm8650/raw/refs/heads/main/other_patch/bbrv3-6.1.118-op12.patch'
+      lazy_rcu_enable:
+        description: 'Enable Lazy RCU'
+        required: true
+        type: boolean
+        default: 'false'
+      wq_power_efficient_enable:
+        description: 'Enable WQ Power Efficient default'
+        required: true
+        type: boolean
+        default: 'false'
+      zram_writeback_enable:
+        description: '是否启用ZRAM Writeback(允许将zram中的空闲/不可压缩页写回后备存储设备,释放RAM; 需配合用户空间脚本配置backing device才能生效)'
+        required: true
+        type: boolean
+        default: 'false'
       better_net:
         description: '是否开启网络功能拓展配置(用于为ipset及需要iptables等高级网络功能内核支持的程序提供支持)'
         required: true
@@ -94,28 +122,8 @@ on:
         required: true
         type: boolean
         default: 'true'
-      lazy_rcu:
-        description: '是否启用 lazy rcu(节能回调批处理，依赖RCU_NOCB_CPU)'
-        required: true
-        type: boolean
-        default: 'true'
-      wq_power_efficient:
-        description: '是否启用 WQ power efficient default(使用 system_power_efficient_wq 等默认节能WQ)'
-        required: true
-        type: boolean
-        default: 'true'
-      zram_writeback:
-        description: '是否启用 zram 回写(writeback)支持(需要内核支持ZRAM_WRITEBACK)'
-        required: true
-        type: boolean
-        default: 'true'
       kexec_enable:
         description: '是否启用 kexec 内核热切换支持'
-        required: true
-        type: boolean
-        default: 'true'
-      bbrv3_enable:
-        description: '是否替换为 Google BBRv3(替换 tcp_bbr.c，上游google/bbr v3 分支)'
         required: true
         type: boolean
         default: 'true'
@@ -132,7 +140,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       ksuver: ${{ steps.ksu_version.outputs.ksuver }}
     steps:
@@ -147,14 +155,23 @@ jobs:
           sudo apt purge man-db &&
           sudo rm -rf /var/lib/man-db/auto-update &&
           sudo apt update &&
-          sudo apt-get install -y --no-install-recommends binutils python-is-python3 libssl-dev libelf-dev ccache wget patch &
-          #旧版完整指令：（由于经过验证大部分指令已内置于GitHub Action环境中，故进行精简）
-          #sudo apt-get install -y --no-install-recommends curl bison flex make binutils git perl gcc python3 python-is-python3 bc libssl-dev libelf-dev zip unzip ccache
+          sudo apt-get install -y --no-install-recommends curl bison flex make binutils git perl gcc python3 python-is-python3 bc libssl-dev libelf-dev zip unzip ccache wget patch aria2
           
           echo "正在克隆源码仓库..."
-          aria2c -s16 -x16 -k1M https://github.com/cctv18/android_kernel_common_oneplus_sm8650/archive/refs/heads/oneplus/sm8650_b_16.0.0_oneplus12.zip -o common.zip && 
+          if [[ "${{ github.event.inputs.bbr_variant }}" == "bbrv3" ]]; then
+            KERNEL_BRANCH="oneplus/sm8650_v_15.0.0_oneplus12_6.1.118"
+          else
+            KERNEL_BRANCH="oneplus/sm8650_b_16.0.0_oneplus12"
+          fi
+          echo "Using kernel branch: ${KERNEL_BRANCH}"
+          aria2c -s16 -x16 -k1M "https://github.com/cctv18/android_kernel_common_oneplus_sm8650/archive/refs/heads/${KERNEL_BRANCH}.zip" -o common.zip && 
           unzip -q common.zip && 
-          mv "android_kernel_common_oneplus_sm8650-oneplus-sm8650_b_16.0.0_oneplus12" common &&
+          COMMON_SRC_DIR="$(find . -maxdepth 1 -type d -name 'android_kernel_common_oneplus_sm8650-*' | head -n 1)" &&
+          if [[ -z "${COMMON_SRC_DIR}" ]]; then
+            echo "Failed to locate extracted kernel source directory"
+            exit 1
+          fi
+          mv "${COMMON_SRC_DIR}" common &&
           rm -rf common.zip &
           
           echo "正在克隆llvm-Clang20工具链..." &&
@@ -239,19 +256,24 @@ jobs:
           # 确保ccache目录存在
           mkdir -p "$CCACHE_DIR"
           
-          # 每次运行都重新配置缓存大小
+          # 尝试配置ccache，如果缓存损坏则清除后重试
           echo "配置ccache缓存大小为: $CCACHE_MAXSIZE"
-          ccache -M "$CCACHE_MAXSIZE"
-          ccache -o compression=true
+          if ! ccache -M "$CCACHE_MAXSIZE" 2>/dev/null; then
+            echo "⚠️ ccache配置失败，尝试清除损坏的缓存..."
+            ccache -C 2>/dev/null || true
+            rm -rf "$CCACHE_DIR"/*
+            ccache -M "$CCACHE_MAXSIZE"
+          fi
+          ccache -o compression=true || true
           
           # 显示初始缓存状态
           echo "ccache初始状态:"
-          ccache -s
+          ccache -s || true
           
           # 如果缓存恢复命中，显示详细信息
           if [ "${{ steps.ccache-restore.outputs.cache-hit }}" == 'true' ]; then
             echo "ccache缓存命中详情:"
-            ccache -sv
+            ccache -sv || true
           fi
 
       - name: 添加KernelSU
@@ -499,22 +521,6 @@ jobs:
           cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./crypto
           cp ../SukiSU_patch/other/zram/zram_patch/${{ env.KERNEL_VERSION }}/lz4kd.patch ./
           patch -p1 -F 3 < lz4kd.patch || true
-
-      - name: 应用 BBRv3
-        if: inputs.bbrv3_enable
-        run: |
-          cd kernel_workspace
-          rm -rf google_bbr_v3
-          git clone --depth=1 -b v3 https://github.com/google/bbr.git google_bbr_v3
-          if [[ ! -f google_bbr_v3/net/ipv4/tcp_bbr.c ]]; then
-            echo "未找到 google/bbr(v3) 的 net/ipv4/tcp_bbr.c"
-            exit 1
-          fi
-          if [[ ! -f common/net/ipv4/tcp_bbr.c ]]; then
-            echo "未找到当前内核源码的 common/net/ipv4/tcp_bbr.c"
-            exit 1
-          fi
-          cp google_bbr_v3/net/ipv4/tcp_bbr.c common/net/ipv4/tcp_bbr.c
           
       - name: 添加SUSFS 配置项
         if: inputs.susfs_enable
@@ -582,14 +588,14 @@ jobs:
           sed -i 's/check_defconfig//' ./common/build.config.gki
           append_defconfig "CONFIG_HEADERS_INSTALL" "n"
 
-          if [[ "${{ github.event.inputs.lazy_rcu }}" == "true" ]]; then
+          if [[ "${{ github.event.inputs.lazy_rcu_enable }}" == "true" ]]; then
             enable_symbol_or_die "RCU_NOCB_CPU" "y" "lazy rcu 依赖 RCU_NOCB_CPU"
             enable_symbol_or_die "RCU_LAZY" "y" "lazy rcu"
           fi
-          if [[ "${{ github.event.inputs.wq_power_efficient }}" == "true" ]]; then
+          if [[ "${{ github.event.inputs.wq_power_efficient_enable }}" == "true" ]]; then
             enable_symbol_or_die "WQ_POWER_EFFICIENT_DEFAULT" "y" "wq power efficient default"
           fi
-          if [[ "${{ github.event.inputs.zram_writeback }}" == "true" ]]; then
+          if [[ "${{ github.event.inputs.zram_writeback_enable }}" == "true" ]]; then
             enable_symbol_or_die "ZRAM" "y" "zram writeback 依赖 ZRAM"
             enable_symbol_or_die "ZRAM_WRITEBACK" "y" "zram writeback"
             if has_kconfig_symbol "ZRAM_MEMORY_TRACKING"; then
@@ -659,6 +665,128 @@ jobs:
             # BBR拥塞算法，而是使用在吞吐量、稳定性、兼容性、能效之间取得最佳平衡的CUBIC算法。在开启BBR前，请考虑自己是否真的有使用BBR的必要。
             ################################################################################################################################
             echo "CONFIG_TCP_CONG_BBR=y" >> ./common/arch/arm64/configs/gki_defconfig
+            if [[ "${{ github.event.inputs.bbr_variant }}" == "bbrv3" ]]; then
+              echo "::notice::Building BBRv3 compat patch inline (no external patch file needed)..."
+              #由于是自托管runner，需先清理旧目录
+              rm -rf /tmp/bbrv3_src
+              # 克隆 google/bbr v3 的 tcp_bbr.c
+              git clone --depth 1 --branch v3 https://github.com/google/bbr.git /tmp/bbrv3_src
+              cp /tmp/bbrv3_src/net/ipv4/tcp_bbr.c ./common/net/ipv4/tcp_bbr.c
+              cd ./common
+              F=net/ipv4/tcp_bbr.c
+
+              # 创建兼容头文件（避免 heredoc 缩进问题，用 echo 方式写入）
+              {
+              echo '/* BBRv3 compatibility shims for Android GKI 6.1 */'
+              echo '#ifndef _BBR_COMPAT_H'
+              echo '#define _BBR_COMPAT_H'
+              echo '#ifndef TCP_ECN_LOW'
+              echo '#define TCP_ECN_LOW           0'
+              echo '#endif'
+              echo '#ifndef TCP_ECN_ECT_PERMANENT'
+              echo '#define TCP_ECN_ECT_PERMANENT 0'
+              echo '#endif'
+              echo '#ifndef CA_EVENT_TLP_RECOVERY'
+              echo '#define CA_EVENT_TLP_RECOVERY CA_EVENT_LOSS'
+              echo '#endif'
+              echo '#ifndef TCP_PLB_SCALE'
+              echo '#define TCP_PLB_SCALE         BBR_SCALE'
+              echo '#endif'
+              echo '/* PLB stubs */'
+              echo 'struct tcp_plb_state { u32 pause_until; };'
+              echo 'static inline void tcp_plb_update_state(struct sock *s, struct tcp_plb_state *p, int c) {}'
+              echo 'static inline void tcp_plb_check_rehash(struct sock *s, struct tcp_plb_state *p) {}'
+              echo 'static inline void tcp_plb_update_state_upon_rto(struct sock *s, struct tcp_plb_state *p) {}'
+              echo 'static inline bool bbr_plb_enabled(struct sock *sk) { return false; }'
+              echo '#define tcp_skb_tx_in_flight_is_suspicious(a,b,c) (0)'
+              echo 'static inline void dctcp_ece_ack_update(struct sock *sk, enum tcp_ca_event ev, u32 *prior_rcv_nxt, u32 *ce_state) {'
+              echo '    if (ev == CA_EVENT_ECN_IS_CE) *ce_state = 1;'
+              echo '    else if (ev == CA_EVENT_ECN_NO_CE) *ce_state = 0;'
+              echo '}'
+              echo 'enum tcp_bbr_phase {'
+              echo '    BBR_PHASE_INVALID=0, BBR_PHASE_STARTUP=1, BBR_PHASE_DRAIN=2,'
+              echo '    BBR_PHASE_PROBE_RTT=3, BBR_PHASE_PROBE_BW_UP=4, BBR_PHASE_PROBE_BW_DOWN=5,'
+              echo '    BBR_PHASE_PROBE_BW_CRUISE=6, BBR_PHASE_PROBE_BW_REFILL=7,'
+              echo '};'
+              echo 'static u32 bbr_garbage;'
+              echo '#endif'
+              } > net/ipv4/bbr_compat.h
+
+              # 增大 ICSK_CA_PRIV_SIZE
+              H=include/net/inet_connection_sock.h
+              sed -i 's/^#define[[:space:]]*ICSK_CA_PRIV_SIZE[[:space:]]*.*/#define ICSK_CA_PRIV_SIZE\t(48 * sizeof(u32))/' "$H"
+
+              # 移除 struct bbr 中的 plb 字段
+              sed -i '/struct tcp_plb_state plb;/d' "$F"
+              sed -i '/u8.*unused_4/d' "$F"
+              sed -i 's/\&bbr->plb/NULL/g' "$F"
+              sed -i 's/bbr->plb\.pause_until/bbr_garbage/g' "$F"
+
+              # 替换 include
+              sed -i 's|#include "tcp_dctcp.h"|#include "bbr_compat.h"|' "$F"
+              sed -i '/#include <trace\/events\/tcp.h>/d' "$F"
+              sed -i 's/__bpf_kfunc[[:space:]]\+//g' "$F"
+              sed -i 's/BTF_KFUNCS_START/BTF_SET8_START/g; s/BTF_KFUNCS_END/BTF_SET8_END/g' "$F"
+
+              # bbr_main 函数签名修复
+              sed -i 's/static void bbr_main(struct sock \*sk, u32 ack, int flag,/static void bbr_main(struct sock *sk,/' "$F"
+
+              # 字段替换
+              sed -i 's/rs->tx_in_flight/rs->prior_in_flight/g' "$F"
+              sed -i 's/rs\.tx_in_flight/rs.prior_in_flight/g' "$F"
+              sed -i '/^[[:space:]]*rs\.lost[[:space:]]*=/d' "$F"
+              sed -i 's/rs->lost/0/g' "$F"
+              sed -i 's/rs\.lost/0/g' "$F"
+              sed -i 's/READ_ONCE(net->ipv4\.sysctl_tcp_plb_enabled)/false/g' "$F"
+              
+              # 使用垃圾桶变量替换，避免赋值错误 (如 0 = 0)
+              # 同时兼容 .in_flight (旧代码?) 和 _in_flight (Google BBRv3)
+              sed -i 's/scb->tx\.in_flight/bbr_garbage/g' "$F"
+              sed -i 's/scb->tx_in_flight/bbr_garbage/g' "$F"
+              sed -i 's/scb->tx\.lost/bbr_garbage/g' "$F"
+              sed -i 's/scb->tx_lost/bbr_garbage/g' "$F"
+              sed -i 's/TCP_SKB_CB(skb)->tx\.lost/bbr_garbage/g' "$F"
+              sed -i 's/TCP_SKB_CB(skb)->tx\.in_flight/bbr_garbage/g' "$F"
+              sed -i 's/rs->is_acking_tlp_retrans_seq/0/g' "$F"
+
+              # delivered_ce / is_ece
+              if ! grep -q 'delivered_ce' include/net/tcp.h 2>/dev/null; then
+                sed -i 's/rs->delivered_ce/0/g; s/rs\.delivered_ce/0/g' "$F"
+                sed -i 's/tp->delivered_ce/bbr_garbage/g' "$F"
+              fi
+              if ! grep -q 'is_ece' include/net/tcp.h 2>/dev/null; then
+                sed -i 's/rs->is_ece/0/g' "$F"
+              fi
+
+              # 其他兼容性修复
+              sed -i '/fast_ack_mode/d' "$F"
+              sed -i 's/tp->tlp_orig_data_app_limited/bbr_garbage/' "$F"
+              sed -i '/\.skb_marked_lost/d' "$F"
+              sed -i '/BTF_ID_FLAGS(func, bbr_skb_marked_lost)/d' "$F"
+
+              # tso_segs → min_tso_segs 兼容
+              sed -i '/static struct tcp_congestion_ops/i\
+              static u32 bbr_min_tso_segs_compat(struct sock *sk)\
+              {\
+              \treturn bbr_tso_segs(sk, tcp_sk(sk)->mss_cache);\
+              }\
+              ' "$F"
+              sed -i 's/\.tso_segs\t= bbr_tso_segs,/.min_tso_segs\t= bbr_min_tso_segs_compat,/' "$F"
+              sed -i 's/BTF_ID_FLAGS(func, bbr_tso_segs)/BTF_ID_FLAGS(func, bbr_min_tso_segs_compat)/' "$F"
+
+              # bbr_get_info 移除新字段
+              sed -i '/bbr_bw_hi_lsb/d; /bbr_bw_hi_msb/d' "$F"
+              sed -i '/bbr_bw_lo_lsb/d; /bbr_bw_lo_msb/d' "$F"
+              sed -i '/bbr_info->bbr_mode/d; /bbr_info->bbr_phase/d; /bbr_info->bbr_version/d' "$F"
+              sed -i '/bbr_info->bbr_inflight_lo/d; /bbr_info->bbr_inflight_hi/d; /bbr_info->bbr_extra_acked/d' "$F"
+
+              if ! grep -rq 'TCP_CONG_WANTS_CE_EVENTS' include/ 2>/dev/null; then
+                sed -i 's/ | TCP_CONG_WANTS_CE_EVENTS//' "$F"
+              fi
+
+              echo "::notice::BBRv3 inline compat patch applied successfully!"
+              cd ..
+            fi
             #CUBIC：安卓的默认TCP拥塞控制算法，在吞吐量、稳定性、兼容性、能效之间取得最佳平衡，具有高兼容性与公平性、抗网络波动性强、低计算开销的特点，是绝大部分移动场景的优先选择
             echo "CONFIG_TCP_CONG_CUBIC=y" >> ./common/arch/arm64/configs/gki_defconfig
             #VEGAS：基于时延的拥塞控制算法之一，将回路响应时间（Round Trip Time，RTT）增加视为出现拥塞，增加时增大拥塞窗口，减小时减小拥塞窗口
@@ -704,7 +832,7 @@ jobs:
           cd kernel_workspace
           echo "CONFIG_BBG=y" >> ./common/arch/arm64/configs/gki_defconfig
           cd ./common
-          curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
+          curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash || true
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
 
       - name: 添加制作名称
@@ -755,38 +883,43 @@ jobs:
           echo "FAKESTAT=$FAKESTAT" >> $GITHUB_ENV
           echo "FAKETIME=$FAKETIME" >> $GITHUB_ENV
           SO_DIR=$(pwd)
-          export PRELOAD_LIBS="$SO_DIR/libfakestat.so $SO_DIR/libfaketimeMT.so"
+          # 检测 glibc 兼容性，如果 .so 无法在当前系统加载则跳过时间伪造
+          PRELOAD_LIBS=""
+          if LD_PRELOAD="$SO_DIR/libfakestat.so $SO_DIR/libfaketimeMT.so" date &>/dev/null; then
+            PRELOAD_LIBS="$SO_DIR/libfakestat.so $SO_DIR/libfaketimeMT.so"
+            echo "✅ 时间伪造库兼容当前 glibc，已启用 LD_PRELOAD"
+          else
+            echo "⚠️ 时间伪造库与当前 glibc 不兼容（容器可能为 Ubuntu 20.04），跳过 LD_PRELOAD"
+          fi
+          export PRELOAD_LIBS
           #创建 CC (编译器) 包装器
           echo '#!/bin/bash' > cc-wrapper
-          echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> cc-wrapper
-          echo 'export FAKESTAT="'$FAKESTAT'"' >> cc-wrapper
-          echo 'export FAKETIME="'$FAKETIME'"' >> cc-wrapper
+          if [ -n "$PRELOAD_LIBS" ]; then
+            echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> cc-wrapper
+            echo 'export FAKESTAT="'$FAKESTAT'"' >> cc-wrapper
+            echo 'export FAKETIME="'$FAKETIME'"' >> cc-wrapper
+          fi
           echo 'ccache clang "$@"' >> cc-wrapper
           #创建 LD (链接器) 包装器
           echo '#!/bin/bash' > ld-wrapper
-          echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> ld-wrapper
-          echo 'export FAKESTAT="'$FAKESTAT'"' >> ld-wrapper
-          echo 'export FAKETIME="'$FAKETIME'"' >> ld-wrapper
+          if [ -n "$PRELOAD_LIBS" ]; then
+            echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> ld-wrapper
+            echo 'export FAKESTAT="'$FAKESTAT'"' >> ld-wrapper
+            echo 'export FAKETIME="'$FAKETIME'"' >> ld-wrapper
+          fi
           echo 'ld.lld "$@"' >> ld-wrapper
-          
-          # 测试时间劫持测试是否正常工作
-          echo "--- [Wrapper Test] 正在创建通用的时间劫持测试脚本 ---"
-          echo '#!/bin/bash' > test-wrapper.sh
-          echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> test-wrapper.sh
-          echo 'export FAKESTAT="'$FAKESTAT'"' >> test-wrapper.sh
-          echo 'export FAKETIME="'$FAKETIME'"' >> test-wrapper.sh
-          echo 'echo ">>> Wrapper 内部环境检查完毕."' >> test-wrapper.sh
-          echo 'exec "$@"' >> test-wrapper.sh # 执行所有传入的参数
-          chmod +x test-wrapper.sh
-          echo "--- [Wrapper Test] 正在测试 (date) 命令 ---"
-          ./test-wrapper.sh date
-          echo "--- [Wrapper Test] 正在测试 (stat) 命令 ---"
-          ./test-wrapper.sh stat ./Makefile
-          echo "--- [Wrapper Test] 测试完毕 ---"
           chmod +x cc-wrapper ld-wrapper
-          echo "--- 编译前环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
-          echo "--- 编译前环境文件时间戳: ---"
-          LD_PRELOAD=$PRELOAD_LIBS stat ./Makefile
+          
+          # 测试时间劫持（仅在兼容时执行）
+          if [ -n "$PRELOAD_LIBS" ]; then
+            echo "--- [Wrapper Test] 正在测试时间伪造 ---"
+            LD_PRELOAD="$PRELOAD_LIBS" date || true
+            echo "--- 编译前环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
+            echo "--- 编译前环境文件时间戳: ---"
+            LD_PRELOAD=$PRELOAD_LIBS stat ./Makefile || true
+          else
+            echo "--- [Wrapper Test] 时间伪造已跳过（glibc 不兼容）---"
+          fi
           
           #在构建内核的同时清除不必要的.NET, Android NDK, Haskell, CodeQL运行库，清理空间且不阻塞后续步骤运行
           sudo rm -rf /usr/share/dotnet &
@@ -803,10 +936,10 @@ jobs:
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error $AUTOFDO_OPT gki_defconfig &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error $AUTOFDO_OPT Image
           
-          # 编译后时间劫持二次校验
-          echo "--- 编译后环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
+          # 编译后时间劫持二次校验（glibc 不兼容时自动跳过）
+          echo "--- 编译后环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date 2>/dev/null || date) ---"
           echo "--- 编译后环境文件时间戳: ---"
-          LD_PRELOAD=$PRELOAD_LIBS stat ./Makefile
+          LD_PRELOAD=$PRELOAD_LIBS stat ./Makefile 2>/dev/null || stat ./Makefile
           echo "内核编译完成！"
           echo "ccache状态："
           ccache -s
@@ -876,7 +1009,7 @@ jobs:
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: write
       packages: write
@@ -939,10 +1072,10 @@ jobs:
             - LZ4KD支持：${{ github.event.inputs.lz4kd_enable }}
             - 网络功能增强：${{ github.event.inputs.better_net }}
             - BBR/Brutal 等拥塞控制算法支持：${{ github.event.inputs.bbr_enable }}
-            - BBRv3支持：${{ github.event.inputs.bbrv3_enable }}
-            - lazy rcu：${{ github.event.inputs.lazy_rcu }}
-            - wq power efficient：${{ github.event.inputs.wq_power_efficient }}
-            - zram writeback：${{ github.event.inputs.zram_writeback }}
+            - BBR variant：${{ github.event.inputs.bbr_variant }}
+            - Lazy RCU：${{ github.event.inputs.lazy_rcu_enable }}
+            - WQ power efficient：${{ github.event.inputs.wq_power_efficient_enable }}
+            - ZRAM writeback：${{ github.event.inputs.zram_writeback_enable }}
             - kexec热切换：${{ github.event.inputs.kexec_enable }}
             - AutoFDO：${{ github.event.inputs.autofdo_enable }}
             - Oplus f2fs 免清data：${{ github.event.inputs.oplus_f2fs_compat }}

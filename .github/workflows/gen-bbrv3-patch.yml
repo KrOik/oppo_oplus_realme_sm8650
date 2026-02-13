@@ -1,0 +1,203 @@
+name: Generate BBRv3 Patch (6.1 compat)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gen:
+    runs-on: self-hosted
+    steps:
+      - name: Clone oneplus12 base
+        run: |
+          git clone --depth 1 --branch oneplus/sm8650_b_16.0.0_oneplus12 \
+            https://github.com/cctv18/android_kernel_common_oneplus_sm8650.git base
+
+      - name: Clone google bbr v3
+        run: |
+          git clone --depth 1 --branch v3 https://github.com/google/bbr.git bbrv3
+
+      - name: Build compatible BBRv3 patch
+        run: |
+          cp bbrv3/net/ipv4/tcp_bbr.c base/net/ipv4/tcp_bbr.c
+          cd base
+          F=net/ipv4/tcp_bbr.c
+
+          ################################################################
+          # 创建兼容头文件，提供 6.1 GKI 内核缺失的符号定义
+          ################################################################
+          cat > net/ipv4/bbr_compat.h << 'COMPAT'
+          /* BBRv3 compatibility shims for Android GKI 6.1 */
+          #ifndef _BBR_COMPAT_H
+          #define _BBR_COMPAT_H
+
+          #ifndef TCP_ECN_LOW
+          #define TCP_ECN_LOW           0
+          #endif
+          #ifndef TCP_ECN_ECT_PERMANENT
+          #define TCP_ECN_ECT_PERMANENT 0
+          #endif
+          #ifndef CA_EVENT_TLP_RECOVERY
+          #define CA_EVENT_TLP_RECOVERY CA_EVENT_LOSS
+          #endif
+          #ifndef TCP_PLB_SCALE
+          #define TCP_PLB_SCALE         BBR_SCALE
+          #endif
+
+          /* PLB stubs */
+          struct tcp_plb_state { u32 pause_until; };
+          static inline void tcp_plb_update_state(struct sock *s,
+              struct tcp_plb_state *p, int c) {}
+          static inline void tcp_plb_check_rehash(struct sock *s,
+              struct tcp_plb_state *p) {}
+          static inline void tcp_plb_update_state_upon_rto(struct sock *s,
+              struct tcp_plb_state *p) {}
+          static inline bool bbr_plb_enabled(struct sock *sk) { return false; }
+
+          /* tcp_skb_tx_in_flight_is_suspicious stub */
+          #define tcp_skb_tx_in_flight_is_suspicious(a,b,c) (0)
+
+          /* dctcp ECE ACK update stub */
+          static inline void dctcp_ece_ack_update(struct sock *sk,
+              enum tcp_ca_event ev, u32 *prior_rcv_nxt, u32 *ce_state)
+          {
+              if (ev == CA_EVENT_ECN_IS_CE)
+                  *ce_state = 1;
+              else if (ev == CA_EVENT_ECN_NO_CE)
+                  *ce_state = 0;
+          }
+
+          /* tcp_bbr_phase enum for diagnostics */
+          enum tcp_bbr_phase {
+              BBR_PHASE_INVALID         = 0,
+              BBR_PHASE_STARTUP         = 1,
+              BBR_PHASE_DRAIN           = 2,
+              BBR_PHASE_PROBE_RTT       = 3,
+              BBR_PHASE_PROBE_BW_UP     = 4,
+              BBR_PHASE_PROBE_BW_DOWN   = 5,
+              BBR_PHASE_PROBE_BW_CRUISE = 6,
+              BBR_PHASE_PROBE_BW_REFILL = 7,
+          };
+
+          #endif /* _BBR_COMPAT_H */
+          COMPAT
+
+          ################################################################
+          # 增大 ICSK_CA_PRIV_SIZE（BBRv3 struct bbr ~144B，6.1 默认仅 64B）
+          ################################################################
+          H=include/net/inet_connection_sock.h
+          sed -i 's/^#define[[:space:]]*ICSK_CA_PRIV_SIZE[[:space:]]*.*/#define ICSK_CA_PRIV_SIZE\t(48 * sizeof(u32))/' "$H"
+
+          ################################################################
+          # 移除 struct bbr 中的 plb 字段（PLB 已完全 stub，节省空间）
+          ################################################################
+          # 移除 struct bbr 中的 plb 成员声明
+          sed -i '/struct tcp_plb_state plb;/d' "$F"
+          # 移除 unused_4 对齐占位（plb 删除后不需要）
+          sed -i '/u8.*unused_4/d' "$F"
+          # 将 &bbr->plb 引用替换为 NULL（stub 函数不使用该指针）
+          sed -i 's/\&bbr->plb/NULL/g' "$F"
+          # 移除对 bbr->plb.pause_until 的引用（替换为 0）
+          sed -i 's/bbr->plb\.pause_until/0/g' "$F"
+
+          ################################################################
+          # 修改 tcp_bbr.c 使其兼容 6.1 GKI 内核
+          ################################################################
+
+          # 替换 tcp_dctcp.h(不存在) 为我们的 compat 头
+          sed -i 's|#include "tcp_dctcp.h"|#include "bbr_compat.h"|' "$F"
+
+          # 删除 trace/events/tcp.h include（6.1 可能不存在）
+          sed -i '/#include <trace\/events\/tcp.h>/d' "$F"
+
+          # 去掉 __bpf_kfunc 标记（宏不存在）
+          sed -i 's/__bpf_kfunc[[:space:]]\+//g' "$F"
+
+          # BTF_KFUNCS_START/END → BTF_SET8_START/END
+          sed -i 's/BTF_KFUNCS_START/BTF_SET8_START/g; s/BTF_KFUNCS_END/BTF_SET8_END/g' "$F"
+
+          # bbr_main 函数签名：移除新增的 ack, flag 参数
+          sed -i 's/static void bbr_main(struct sock \*sk, u32 ack, int flag,/static void bbr_main(struct sock *sk,/' "$F"
+
+          # rs->tx_in_flight → rs->prior_in_flight（最接近的替代字段）
+          sed -i 's/rs->tx_in_flight/rs->prior_in_flight/g' "$F"
+          sed -i 's/rs\.tx_in_flight/rs.prior_in_flight/g' "$F"
+
+          # rs->lost / rs.lost → 安全回退（6.1 rate_sample 没有 lost 字段）
+          # 注意: 赋值形式 "rs.lost = ..." 需要整行删除
+          sed -i '/^[[:space:]]*rs\.lost[[:space:]]*=/d' "$F"
+          sed -i 's/rs->lost/0/g' "$F"
+          sed -i 's/rs\.lost/0/g' "$F"
+
+          # sysctl_tcp_plb_enabled（6.1 struct netns_ipv4 没有该成员）
+          sed -i 's/READ_ONCE(net->ipv4\.sysctl_tcp_plb_enabled)/false/g' "$F"
+
+          # tcp_skb_cb 缺少 tx.lost 和 tx.in_flight 字段
+          # scb->tx.in_flight → 0 (行如 rs.prior_in_flight = scb->tx.in_flight)
+          sed -i 's/scb->tx\.in_flight/0/g' "$F"
+          # scb->tx.lost → 0
+          sed -i 's/scb->tx\.lost/0/g' "$F"
+          # TCP_SKB_CB(skb)->tx.lost → 0
+          sed -i 's/TCP_SKB_CB(skb)->tx\.lost/0/g' "$F"
+          # TCP_SKB_CB(skb)->tx.in_flight → 0
+          sed -i 's/TCP_SKB_CB(skb)->tx\.in_flight/0/g' "$F"
+
+          # rs->is_acking_tlp_retrans_seq → 0（跳过 TLP 优化）
+          sed -i 's/rs->is_acking_tlp_retrans_seq/0/g' "$F"
+
+          # 处理 rs->delivered_ce / tp->delivered_ce
+          if ! grep -q 'delivered_ce' include/net/tcp.h 2>/dev/null; then
+            sed -i 's/rs->delivered_ce/0/g; s/rs\.delivered_ce/0/g' "$F"
+            sed -i 's/tp->delivered_ce/0/g' "$F"
+          fi
+
+          # 处理 rs->is_ece（6.1 可能不存在）
+          if ! grep -q 'is_ece' include/net/tcp.h 2>/dev/null; then
+            sed -i 's/rs->is_ece/0/g' "$F"
+          fi
+
+          # tp->fast_ack_mode（6.1 不存在）→ 删除该行
+          sed -i '/fast_ack_mode/d' "$F"
+
+          # tp->tlp_orig_data_app_limited（6.1 不存在）→ 替换为0
+          sed -i 's/tp->tlp_orig_data_app_limited/0/' "$F"
+
+          # 移除 .skb_marked_lost 回调注册（6.1 不支持）
+          sed -i '/\.skb_marked_lost/d' "$F"
+          sed -i '/BTF_ID_FLAGS(func, bbr_skb_marked_lost)/d' "$F"
+
+          # .tso_segs → .min_tso_segs（6.1 使用旧名称）
+          # 添加一个兼容包装函数
+          sed -i '/static struct tcp_congestion_ops/i\
+          static u32 bbr_min_tso_segs_compat(struct sock *sk)\
+          {\
+          \treturn bbr_tso_segs(sk, tcp_sk(sk)->mss_cache);\
+          }\
+          ' "$F"
+          sed -i 's/\.tso_segs\t= bbr_tso_segs,/.min_tso_segs\t= bbr_min_tso_segs_compat,/' "$F"
+          sed -i 's/BTF_ID_FLAGS(func, bbr_tso_segs)/BTF_ID_FLAGS(func, bbr_min_tso_segs_compat)/' "$F"
+
+          # 修复 bbr_get_info：移除 6.1 tcp_bbr_info 没有的字段
+          sed -i '/bbr_bw_hi_lsb/d; /bbr_bw_hi_msb/d' "$F"
+          sed -i '/bbr_bw_lo_lsb/d; /bbr_bw_lo_msb/d' "$F"
+          sed -i '/bbr_info->bbr_mode/d; /bbr_info->bbr_phase/d; /bbr_info->bbr_version/d' "$F"
+          sed -i '/bbr_info->bbr_inflight_lo/d; /bbr_info->bbr_inflight_hi/d; /bbr_info->bbr_extra_acked/d' "$F"
+
+          # TCP_CONG_WANTS_CE_EVENTS 检查（6.1 可能不存在）
+          if ! grep -rq 'TCP_CONG_WANTS_CE_EVENTS' include/ 2>/dev/null; then
+            sed -i 's/ | TCP_CONG_WANTS_CE_EVENTS//' "$F"
+          fi
+
+          ################################################################
+          # 添加到 git 并生成补丁
+          ################################################################
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add net/ipv4/tcp_bbr.c net/ipv4/bbr_compat.h include/net/inet_connection_sock.h
+          git commit -m "tcp: import BBRv3 draft for oneplus 6.1.118 base (compat)"
+          git format-patch -1 --stdout > ../bbrv3-6.1.118-op12.patch
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbrv3-patch
+          path: bbrv3-6.1.118-op12.patch

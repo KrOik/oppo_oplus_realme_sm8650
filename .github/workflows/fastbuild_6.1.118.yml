@@ -200,19 +200,24 @@ jobs:
           # 确保ccache目录存在
           mkdir -p "$CCACHE_DIR"
           
-          # 每次运行都重新配置缓存大小
+          # 尝试配置ccache，如果缓存损坏则清除后重试
           echo "配置ccache缓存大小为: $CCACHE_MAXSIZE"
-          ccache -M "$CCACHE_MAXSIZE"
-          ccache -o compression=true
+          if ! ccache -M "$CCACHE_MAXSIZE" 2>/dev/null; then
+            echo "⚠️ ccache配置失败，尝试清除损坏的缓存..."
+            ccache -C 2>/dev/null || true
+            rm -rf "$CCACHE_DIR"/*
+            ccache -M "$CCACHE_MAXSIZE"
+          fi
+          ccache -o compression=true || true
           
           # 显示初始缓存状态
           echo "ccache初始状态:"
-          ccache -s
+          ccache -s || true
           
           # 如果缓存恢复命中，显示详细信息
           if [ "${{ steps.ccache-restore.outputs.cache-hit }}" == 'true' ]; then
             echo "ccache缓存命中详情:"
-            ccache -sv
+            ccache -sv || true
           fi
 
       - name: 添加KernelSU

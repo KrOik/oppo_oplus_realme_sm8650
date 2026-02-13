@@ -20,6 +20,8 @@ read -p "KSU分支版本(y=SukiSU Ultra, r=ReSukiSU, n=KernelSU Next, m=MKSU, k=
 KSU_BRANCH=${KSU_BRANCH:-y}
 read -p "是否启用多管理器支持（兼容 WildKSU/部分管理器签名校验）？(y/n，默认：y): " APPLY_MULTI_MANAGER
 APPLY_MULTI_MANAGER=${APPLY_MULTI_MANAGER:-y}
+read -p "是否应用 Oplus f2fs 免清 data 补丁（同步官方 f2fs 以兼容 data 分区）？(y/n，默认：n): " APPLY_OPLUS_F2FS
+APPLY_OPLUS_F2FS=${APPLY_OPLUS_F2FS:-n}
 read -p "是否应用 lz4 1.10.0 & zstd 1.5.7 补丁？(y/n，默认：y): " APPLY_LZ4
 APPLY_LZ4=${APPLY_LZ4:-y}
 read -p "是否应用 lz4kd 补丁？(y/n，默认：n): " APPLY_LZ4KD
@@ -95,6 +97,7 @@ echo "启用三星SSG IO调度器: $APPLY_SSG"
 echo "启用Re-Kernel: $APPLY_REKERNEL"
 echo "启用内核级基带保护: $APPLY_BBG"
 echo "多管理器支持: $APPLY_MULTI_MANAGER"
+echo "Oplus f2fs 免清 data: $APPLY_OPLUS_F2FS"
 echo "===================="
 echo
 
@@ -143,6 +146,38 @@ echo ">>> 替换内核版本后缀..."
 for f in ./common/scripts/setlocalversion; do
   sed -i "\$s|echo \"\\\$res\"|echo \"-${CUSTOM_SUFFIX}\"|" "$f"
 done
+
+if [[ "$APPLY_OPLUS_F2FS" == [yY] ]]; then
+  echo ">>> 正在应用 Oplus f2fs 免清 data 补丁（同步官方 f2fs 实现）..."
+  cd "$WORKDIR/kernel_workspace"
+  rm -rf oppo_kernel_sm8650
+  git clone --depth=1 -b oppo/sm8650_b_16.0.0_find_x7_ultra https://github.com/oppo-source/android_kernel_oppo_sm8650.git oppo_kernel_sm8650
+  if [[ ! -d "oppo_kernel_sm8650/fs/f2fs" ]]; then
+    echo ">>> 未找到 oppo-source f2fs 源码目录：oppo_kernel_sm8650/fs/f2fs"
+    exit 1
+  fi
+  if [[ ! -d "common/fs/f2fs" ]]; then
+    echo ">>> 未找到当前内核源码的 f2fs 目录：common/fs/f2fs"
+    exit 1
+  fi
+  echo ">>> f2fs 差异预览（前 60 行，仅用于确认对比过程）..."
+  diff -ruN common/fs/f2fs oppo_kernel_sm8650/fs/f2fs | head -n 60 || true
+  rm -rf common/fs/f2fs
+  cp -a oppo_kernel_sm8650/fs/f2fs common/fs/f2fs
+  if compgen -G "oppo_kernel_sm8650/include/linux/f2fs*" > /dev/null; then
+    mkdir -p common/include/linux
+    cp -a oppo_kernel_sm8650/include/linux/f2fs* common/include/linux/
+  fi
+  if compgen -G "oppo_kernel_sm8650/include/uapi/linux/f2fs*" > /dev/null; then
+    mkdir -p common/include/uapi/linux
+    cp -a oppo_kernel_sm8650/include/uapi/linux/f2fs* common/include/uapi/linux/
+  fi
+  if compgen -G "oppo_kernel_sm8650/include/trace/events/f2fs*" > /dev/null; then
+    mkdir -p common/include/trace/events
+    cp -a oppo_kernel_sm8650/include/trace/events/f2fs* common/include/trace/events/
+  fi
+  cd "$WORKDIR/kernel_workspace"
+fi
 
 # ===== 拉取 KSU 并设置版本号 =====
 if [[ "$KSU_BRANCH" == "y" || "$KSU_BRANCH" == "Y" ]]; then
@@ -460,6 +495,25 @@ else
 fi
 append_defconfig "CONFIG_TMPFS_XATTR" "y"
 append_defconfig "CONFIG_TMPFS_POSIX_ACL" "y"
+
+if [[ "$APPLY_OPLUS_F2FS" == [yY] ]]; then
+  append_defconfig "CONFIG_F2FS_FS" "y"
+  if has_kconfig_symbol "F2FS_FS_XATTR"; then
+    append_defconfig "CONFIG_F2FS_FS_XATTR" "y"
+  fi
+  if has_kconfig_symbol "F2FS_FS_POSIX_ACL"; then
+    append_defconfig "CONFIG_F2FS_FS_POSIX_ACL" "y"
+  fi
+  if has_kconfig_symbol "F2FS_FS_SECURITY"; then
+    append_defconfig "CONFIG_F2FS_FS_SECURITY" "y"
+  fi
+  if has_kconfig_symbol "F2FS_FS_COMPRESSION"; then
+    append_defconfig "CONFIG_F2FS_FS_COMPRESSION" "y"
+  fi
+  if has_kconfig_symbol "F2FS_FS_COMPRESSION_FIXED_OUTPUT"; then
+    append_defconfig "CONFIG_F2FS_FS_COMPRESSION_FIXED_OUTPUT" "y"
+  fi
+fi
 
 append_defconfig "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE" "y"
 append_defconfig "CONFIG_HEADERS_INSTALL" "n"

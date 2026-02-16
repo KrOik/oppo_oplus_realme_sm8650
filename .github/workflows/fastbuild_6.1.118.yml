@@ -595,15 +595,26 @@ jobs:
                 print "static inline void tcp_plb_check_rehash(struct sock *sk, struct tcp_plb_state *plb) { }"
                 print "static inline void tcp_plb_update_state_upon_rto(struct sock *sk, struct tcp_plb_state *plb) { }"
                 print "#endif"
+                print ""
+                print "/* 6.1 vendor compat helpers for rate_sample/tcp_skb_cb API differences. */"
+                print "static inline u32 bbr_rs_tx_in_flight(const struct rate_sample *rs) { return rs->prior_in_flight; }"
+                print "static inline s32 bbr_rs_lost(const struct rate_sample *rs) { return rs->losses; }"
+                print "static inline bool bbr_rs_is_acking_tlp_retrans_seq(const struct rate_sample *rs) { return false; }"
+                print "static inline bool bbr_tcp_skb_tx_in_flight_is_suspicious(u32 skb_pcount, u8 skb_sacked_flags, u32 tx_in_flight) { return false; }"
               }
             ' common/net/ipv4/tcp_bbr.c > common/net/ipv4/tcp_bbr.c.new
             mv common/net/ipv4/tcp_bbr.c.new common/net/ipv4/tcp_bbr.c
           fi
 
-          python -c "from pathlib import Path; import re; p=Path('common/net/ipv4/tcp_bbr.c'); s=p.read_text(encoding='utf-8'); s2=re.sub(r'want_ecn_alpha\\s*=\\s*\\(bbr->ecn_eligible\\s*\\|\\|\\s*\\(bbr_can_use_ecn\\(sk\\)\\s*&&\\s*READ_ONCE\\(net->ipv4\\.sysctl_tcp_plb_enabled\\)\\)\\);','want_ecn_alpha = bbr->ecn_eligible;', s, count=1, flags=re.S); p.write_text(s2, encoding='utf-8', newline='\\n')"
+          python -c 'from pathlib import Path; import re; p=Path("common/net/ipv4/tcp_bbr.c"); s=p.read_text(encoding="utf-8"); s=s.replace("struct net *net = sock_net(sk);", "struct net *net __maybe_unused = sock_net(sk);"); s=s.replace("READ_ONCE(net->ipv4.sysctl_tcp_plb_enabled)", "0"); reps=[("rs->tx_in_flight","bbr_rs_tx_in_flight(rs)"),("rs->lost","bbr_rs_lost(rs)"),("rs->is_acking_tlp_retrans_seq","bbr_rs_is_acking_tlp_retrans_seq(rs)"),("rs.tx_in_flight","rs.prior_in_flight"),("rs.lost","rs.losses"),("tcp_skb_tx_in_flight_is_suspicious(","bbr_tcp_skb_tx_in_flight_is_suspicious("),("TCP_SKB_CB(skb)->tx.lost","0"),("scb->tx.in_flight","bbr->inflight_latest"),("scb->tx.lost","0")]; [s:=s.replace(a,b) for a,b in reps]; s=s.replace("| TCP_CONG_WANTS_CE_EVENTS",""); s=re.sub(r"\\.tso_segs\\s*=", ".min_tso_segs =", s); s=re.sub(r"^\\s*\\.skb_marked_lost\\s*=\\s*bbr_skb_marked_lost,\\s*\\n", "", s, flags=re.M); s=s.replace("BTF_KFUNCS_START(", "BTF_SET8_START(").replace("BTF_KFUNCS_END(", "BTF_SET8_END("); s=re.sub(r"\\.cong_control\\s*=\\s*bbr_main,", ".cong_control\\t= bbr_main_compat,", s); needle="static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {"; wrap="static void bbr_main_compat(struct sock *sk, const struct rate_sample *rs)\\n{\\n\\tbbr_main(sk, 0, 0, rs);\\n}\\n\\n"; s=s if ("static void bbr_main_compat(struct sock *sk, const struct rate_sample *rs)" in s or needle not in s) else s.replace(needle, wrap+needle, 1); p.write_text(s, encoding="utf-8", newline="\\n")'
 
           if grep -q "sysctl_tcp_plb_enabled" common/net/ipv4/tcp_bbr.c; then
             echo "::error::BBRv3 compat patch failed: sysctl_tcp_plb_enabled still present"
+            exit 1
+          fi
+
+          if grep -Eq "rs->tx_in_flight|rs->lost|rs->is_acking_tlp_retrans_seq|scb->tx.in_flight|scb->tx.lost|TCP_SKB_CB\\(skb\\)->tx.lost|TCP_CONG_WANTS_CE_EVENTS|\\.tso_segs\\s*=|\\.skb_marked_lost\\s*=|BTF_KFUNCS_START|BTF_KFUNCS_END" common/net/ipv4/tcp_bbr.c; then
+            echo "::error::BBRv3 compat patch failed: unresolved 6.1 incompat symbols still present"
             exit 1
           fi
 

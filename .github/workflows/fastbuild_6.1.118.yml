@@ -589,6 +589,9 @@ jobs:
                 print "#ifndef TCP_ECN_LOW"
                 print "#define TCP_ECN_LOW 0"
                 print "#endif"
+                print "#ifndef TCP_ECN_ECT_PERMANENT"
+                print "#define TCP_ECN_ECT_PERMANENT TCP_ECN_ECT_0"
+                print "#endif"
                 print "#ifndef CA_EVENT_TLP_RECOVERY"
                 print "#define CA_EVENT_TLP_RECOVERY ((enum tcp_ca_event)-1)"
                 print "#endif"
@@ -605,6 +608,7 @@ jobs:
                 print "/* 6.1 vendor compat helpers for rate_sample/tcp_skb_cb API differences. */"
                 print "static inline u32 bbr_rs_tx_in_flight(const struct rate_sample *rs) { return rs->prior_in_flight; }"
                 print "static inline s32 bbr_rs_lost(const struct rate_sample *rs) { return rs->losses; }"
+                print "static inline bool bbr_rs_is_ece(const struct rate_sample *rs) { return false; }"
                 print "static inline bool bbr_rs_is_acking_tlp_retrans_seq(const struct rate_sample *rs) { return false; }"
                 print "static inline bool bbr_tcp_skb_tx_in_flight_is_suspicious(u32 skb_pcount, u8 skb_sacked_flags, u32 tx_in_flight) { return false; }"
               }
@@ -612,14 +616,14 @@ jobs:
             mv common/net/ipv4/tcp_bbr.c.new common/net/ipv4/tcp_bbr.c
           fi
 
-          python -c 'from pathlib import Path; p=Path("common/net/ipv4/tcp_bbr.c"); s=p.read_text(encoding="utf-8"); s=s.replace("struct net *net = sock_net(sk);","struct net *net __maybe_unused = sock_net(sk);"); s=s.replace("READ_ONCE(net->ipv4.sysctl_tcp_plb_enabled)","0"); reps=[("rs->tx_in_flight","bbr_rs_tx_in_flight(rs)"),("rs->lost","bbr_rs_lost(rs)"),("rs->is_acking_tlp_retrans_seq","bbr_rs_is_acking_tlp_retrans_seq(rs)"),("rs.tx_in_flight","rs.prior_in_flight"),("rs.lost","rs.losses"),("tcp_skb_tx_in_flight_is_suspicious(","bbr_tcp_skb_tx_in_flight_is_suspicious("),("TCP_SKB_CB(skb)->tx.lost","0"),("scb->tx.in_flight","bbr->inflight_latest"),("scb->tx.lost","0")]; [s:=s.replace(a,b) for a,b in reps]; s=s.replace("| TCP_CONG_WANTS_CE_EVENTS",""); s=s.replace(".tso_segs\t\t= bbr_tso_segs,",".min_tso_segs\t= bbr_tso_segs,"); s=s.replace(".tso_segs\t= bbr_tso_segs,",".min_tso_segs\t= bbr_tso_segs,"); s="\n".join(line for line in s.splitlines() if ".skb_marked_lost" not in line)+"\n"; s=s.replace("BTF_KFUNCS_START(","BTF_SET8_START(").replace("BTF_KFUNCS_END(","BTF_SET8_END("); s=s.replace(".cong_control\t= bbr_main,",".cong_control\t= bbr_main_compat,"); s=s.replace(".cong_control = bbr_main,",".cong_control\t= bbr_main_compat,"); needle="static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {"; wrap="static void bbr_main_compat(struct sock *sk, const struct rate_sample *rs)\n{\n\tbbr_main(sk, 0, 0, rs);\n}\n\n"; s=s if ("static void bbr_main_compat(struct sock *sk, const struct rate_sample *rs)" in s or needle not in s) else s.replace(needle, wrap+needle, 1); p.write_text(s, encoding="utf-8", newline="\n")'
+          python -c 'from pathlib import Path; import re; p=Path("common/net/ipv4/tcp_bbr.c"); s=p.read_text(encoding="utf-8"); s=s.replace("struct net *net = sock_net(sk);","struct net *net __maybe_unused = sock_net(sk);"); s=s.replace("READ_ONCE(net->ipv4.sysctl_tcp_plb_enabled)","0"); reps=[("rs->tx_in_flight","bbr_rs_tx_in_flight(rs)"),("rs->lost","bbr_rs_lost(rs)"),("rs->is_ece","bbr_rs_is_ece(rs)"),("rs->is_acking_tlp_retrans_seq","bbr_rs_is_acking_tlp_retrans_seq(rs)"),("rs.tx_in_flight","rs.prior_in_flight"),("rs.lost","rs.losses"),("TCP_SKB_CB(skb)->tx.lost","0"),("scb->tx.in_flight","bbr->inflight_latest"),("scb->tx.lost","0"),("tp->tlp_orig_data_app_limited","0"),("tp->fast_ack_mode = bbr_fast_ack_mode ? 1 : 0;","(void)bbr_fast_ack_mode;")]; [s:=s.replace(a,b) for a,b in reps]; s=re.sub(r"(?<!bbr_)tcp_skb_tx_in_flight_is_suspicious\\(","bbr_tcp_skb_tx_in_flight_is_suspicious(",s); s=s.replace("| TCP_CONG_WANTS_CE_EVENTS",""); s=s.replace(".tso_segs\t\t= bbr_tso_segs,",".min_tso_segs\t= bbr_min_tso_segs_compat,"); s=s.replace(".tso_segs\t= bbr_tso_segs,",".min_tso_segs\t= bbr_min_tso_segs_compat,"); s=s.replace(".min_tso_segs\t= bbr_tso_segs,",".min_tso_segs\t= bbr_min_tso_segs_compat,"); s=s.replace(".min_tso_segs = bbr_tso_segs,",".min_tso_segs = bbr_min_tso_segs_compat,"); s="\n".join(line for line in s.splitlines() if ".skb_marked_lost" not in line)+"\n"; s=s.replace("BTF_KFUNCS_START(","BTF_SET8_START(").replace("BTF_KFUNCS_END(","BTF_SET8_END("); s=s.replace(".cong_control\t= bbr_main,",".cong_control\t= bbr_main_compat,"); s=s.replace(".cong_control = bbr_main,",".cong_control\t= bbr_main_compat,"); needle="static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {"; main_wrap="static void bbr_main_compat(struct sock *sk, const struct rate_sample *rs)\n{\n\tbbr_main(sk, 0, 0, rs);\n}\n\n"; min_wrap="static u32 bbr_min_tso_segs_compat(struct sock *sk)\n{\n\treturn bbr_tso_segs(sk, tcp_sk(sk)->mss_cache);\n}\n\n"; s=s if ("static u32 bbr_min_tso_segs_compat(struct sock *sk)" in s or needle not in s) else s.replace(needle, min_wrap+needle, 1); s=s if ("static void bbr_main_compat(struct sock *sk, const struct rate_sample *rs)" in s or needle not in s) else s.replace(needle, main_wrap+needle, 1); p.write_text(s, encoding="utf-8", newline="\n")'
 
           if grep -q "sysctl_tcp_plb_enabled" common/net/ipv4/tcp_bbr.c; then
             echo "::error::BBRv3 compat patch failed: sysctl_tcp_plb_enabled still present"
             exit 1
           fi
 
-          if grep -Eq "rs->tx_in_flight|rs->lost|rs->is_acking_tlp_retrans_seq|scb->tx.in_flight|scb->tx.lost|TCP_SKB_CB\\(skb\\)->tx.lost|TCP_CONG_WANTS_CE_EVENTS|\\.tso_segs\\s*=|\\.skb_marked_lost\\s*=|BTF_KFUNCS_START|BTF_KFUNCS_END" common/net/ipv4/tcp_bbr.c; then
+          if grep -Eq "rs->tx_in_flight|rs->lost|rs->is_ece|rs->is_acking_tlp_retrans_seq|scb->tx.in_flight|scb->tx.lost|TCP_SKB_CB\\(skb\\)->tx.lost|tp->fast_ack_mode|tp->tlp_orig_data_app_limited|TCP_CONG_WANTS_CE_EVENTS|\\.tso_segs\\s*=|\\.min_tso_segs\\s*=\\s*bbr_tso_segs|\\.skb_marked_lost\\s*=|BTF_KFUNCS_START|BTF_KFUNCS_END|bbr_bbr_tcp_skb_tx_in_flight_is_suspicious" common/net/ipv4/tcp_bbr.c; then
             echo "::error::BBRv3 compat patch failed: unresolved 6.1 incompat symbols still present"
             exit 1
           fi

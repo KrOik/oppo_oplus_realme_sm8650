@@ -90,7 +90,7 @@ on:
         type: boolean
         default: 'false'
       ssg_enable:
-        description: '是否启用三星SSG IO调度器支持(提升IO读写性能; 在一加12上可能导致bug)'
+        description: '是否启用 Kyber 并设为默认IO调度器(替代SSG IO)'
         required: true
         type: boolean
         default: 'true'
@@ -690,13 +690,16 @@ jobs:
             fi
           fi
 
-      - name: 启用三星SSG IO调度器
+      - name: 设置Kyber为默认IO调度器
         if: inputs.ssg_enable
         run: |
-          echo "正在启用三星SSG IO调度器(一加12等极少数机型开启后可能不开机,若出现bug请关闭此项)…"
+          echo "正在启用Kyber并设为默认IO调度器(关闭SSG IO)…"
           cd kernel_workspace
-          echo "CONFIG_MQ_IOSCHED_SSG=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_MQ_IOSCHED_SSG_CGROUP=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_MQ_IOSCHED_KYBER=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "# CONFIG_MQ_IOSCHED_SSG is not set" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "# CONFIG_MQ_IOSCHED_SSG_CGROUP is not set" >> ./common/arch/arm64/configs/gki_defconfig
+          sed -i 's/CONFIG_MQ_IOSCHED_SSG/CONFIG_MQ_IOSCHED_KYBER/g' ./common/block/elevator.c
+          sed -i 's/"ssg"/"kyber"/g' ./common/block/elevator.c
 
       - name: 启用Re-Kernel支持
         if: inputs.rekernel_enable
@@ -969,7 +972,7 @@ jobs:
             - 禁用 KASAN：${{ github.event.inputs.disable_kasan }}
             - 禁用 PM_DEBUG：${{ github.event.inputs.disable_pm_debug }}
             - 启用 PM_WAKELOCKS_GC：${{ github.event.inputs.enable_wakelocks_gc }}
-            - 三星SSG IO调度器支持：${{ github.event.inputs.ssg_enable }}
+            - Kyber 默认IO调度：${{ github.event.inputs.ssg_enable }}
             - Re-Kernel支持：${{ github.event.inputs.rekernel_enable }}
             - 内核级基带保护支持：${{ github.event.inputs.baseband_guard }}
             - SukiSU Ultra管理器下载：[SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases)

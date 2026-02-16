@@ -111,7 +111,7 @@ on:
         default: 'false'
 
       fast_test_only:
-        description: '????????? BBR ????????????????'
+        description: 'Fast test mode: keep kernel compile, skip KPM/package/release'
         required: true
         type: boolean
         default: 'false'
@@ -739,7 +739,6 @@ jobs:
           echo "BBRv3 quick compile check passed"
 
       - name: 构建内核
-        if: inputs.fast_test_only != 'true'
         run: |
           WORKDIR="$(pwd)"
           export PATH="/usr/lib/ccache:$PATH"
@@ -761,6 +760,14 @@ jobs:
           export CCACHE_DIR="${{ env.CCACHE_DIR }}"
           export CCACHE_MAXSIZE="3G"
           echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "$CCACHE_DIR/ccache.conf"
+
+          if [[ "${{ github.event.inputs.fast_test_only }}" == "true" ]]; then
+            echo "快速测试模式：仅执行内核编译，跳过打包发布相关流程"
+            cd kernel_workspace/common
+            make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig
+            make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
+            exit 0
+          fi
           
           cd kernel_workspace/common
           wget https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/lib/libfakestat.so

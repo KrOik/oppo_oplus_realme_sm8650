@@ -25,7 +25,7 @@ on:
         description: '是否开启susfs(用于增强隐藏环境挂载功能; 可能轻微增加耗电，上游更新导致不稳定时或不需要可关闭)'
         required: true
         type: boolean
-        default: 'true'
+        default: 'false'
       kpm_enable:
         description: '是否开启kpm(builtin-使用(re)sukisu内置kpm, kpn-使用独立kpm实现(支持任意KSU/面具环境); 不需要可保持默认关闭)'
         required: true
@@ -314,8 +314,14 @@ jobs:
             echo "已选择无内置KernelSU模式，跳过KernelSU配置..."
           fi
 
-      - name: 应用 KernelSU & SUSFS 补丁
+      - name: SUSFS upstream 状态检查
         if: inputs.susfs_enable
+        run: |
+          echo "::warning::susfs upstream currently unstable on 6.1.118, force disabling susfs for this run"
+          echo "SUSFS_FORCE_DISABLE=true" >> $GITHUB_ENV
+
+      - name: 应用 KernelSU & SUSFS 补丁
+        if: inputs.susfs_enable && env.SUSFS_FORCE_DISABLE != 'true'
         run: |
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
@@ -444,7 +450,7 @@ jobs:
           patch -p1 -F 3 < lz4kd.patch || true
           
       - name: 添加SUSFS 配置项
-        if: inputs.susfs_enable
+        if: inputs.susfs_enable && env.SUSFS_FORCE_DISABLE != 'true'
         run: |
           cd kernel_workspace
           echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -470,7 +476,7 @@ jobs:
           if [[ ${{ github.event.inputs.kpm_enable }} == 'builtin' && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "resukisu" ) ]]; then
             echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
-          if [[ "${{ github.event.inputs.susfs_enable }}" == "false" ]]; then
+          if [[ "${{ github.event.inputs.susfs_enable }}" == "false" || "${SUSFS_FORCE_DISABLE}" == "true" ]]; then
             echo "CONFIG_KSU_SUSFS=n" >> ./common/arch/arm64/configs/gki_defconfig
           fi
           #添加对 Mountify (backslashxx/mountify) 模块的支持

@@ -45,6 +45,11 @@ on:
         required: true
         type: boolean
         default: 'false'
+      zram_writeback_enable:
+        description: '是否启用 zram writeback 支持(默认开启)'
+        required: true
+        type: boolean
+        default: 'true'
       bbr_enable:
         description: '是否启用bbr算法(优化上行数据,对手机日用无太大意义甚至可能负优化;false关闭,true仅加入算法,default设为默认)'
         required: true
@@ -488,7 +493,11 @@ jobs:
           #添加对 Mountify (backslashxx/mountify) 模块的支持
           echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_ZRAM_WRITEBACK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          if [[ "${{ github.event.inputs.zram_writeback_enable }}" == "true" ]]; then
+            # Enable zram writeback support in Image-only packaging
+            echo "CONFIG_ZRAM=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_ZRAM_WRITEBACK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
           if [[ ${{ github.event.inputs.lz4kd_enable }} == 'true' ]]; then
             echo "CONFIG_ZSMALLOC=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_CRYPTO_LZ4HC=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -995,6 +1004,7 @@ jobs:
             - KPM支持 ：${{ github.event.inputs.kpm_enable }}
             - LZ4支持：${{ github.event.inputs.lz4_enable }}
             - LZ4KD支持：${{ github.event.inputs.lz4kd_enable }}
+            - ZRAM Writeback支持：${{ github.event.inputs.zram_writeback_enable }}
             - 网络功能增强：${{ github.event.inputs.better_net }}
             - BBR/Brutal 等拥塞控制算法支持：${{ github.event.inputs.bbr_enable }}
             - BBRv3 自动移植：${{ github.event.inputs.bbrv3_auto }} (${{ github.event.inputs.bbrv3_tag }})

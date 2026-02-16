@@ -64,16 +64,16 @@ on:
         required: false
         type: string
         default: 'bbrv3-2025-03-18'
-      lazy_rcu_wq_pe:
-        description: '是否启用 Lazy RCU + WQ power efficient'
+      lazy_rcu_enable:
+        description: '是否启用 Lazy RCU'
         required: true
         type: boolean
         default: 'true'
-      disable_kasan:
-        description: '是否禁用 KASAN(省电/性能优化, 会损失内存调试能力)'
+      wq_power_efficient_enable:
+        description: '是否启用 WQ power efficient'
         required: true
         type: boolean
-        default: 'false'
+        default: 'true'
       disable_pm_debug:
         description: '是否禁用 PM_DEBUG/PM_ADVANCED_DEBUG(省电)'
         required: true
@@ -501,14 +501,13 @@ jobs:
           sed -i 's/check_defconfig//' ./common/build.config.gki
           #跳过将uapi标准头安装到 usr/include 目录的不必要操作，节省编译时间
           echo "CONFIG_HEADERS_INSTALL=n" >> ./common/arch/arm64/configs/gki_defconfig
-          if [[ "${{ github.event.inputs.lazy_rcu_wq_pe }}" == "true" ]]; then
+          if [[ "${{ github.event.inputs.lazy_rcu_enable }}" == "true" ]]; then
             echo "CONFIG_RCU_NOCB_CPU=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_RCU_LAZY=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_RCU_LAZY_DEFAULT_OFF=n" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
-          if [[ "${{ github.event.inputs.disable_kasan }}" == "true" ]]; then
-            echo "警告: 6.1.118 基线关闭 KASAN 存在首屏卡死/重启风险，已忽略 disable_kasan 选项并保持 KASAN 开启"
+          if [[ "${{ github.event.inputs.wq_power_efficient_enable }}" == "true" ]]; then
+            echo "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
           if [[ "${{ github.event.inputs.disable_pm_debug }}" == "true" ]]; then
             echo "# CONFIG_PM_DEBUG is not set" >> ./common/arch/arm64/configs/gki_defconfig
@@ -997,8 +996,8 @@ jobs:
             - 网络功能增强：${{ github.event.inputs.better_net }}
             - BBR/Brutal 等拥塞控制算法支持：${{ github.event.inputs.bbr_enable }}
             - BBRv3 自动移植：${{ github.event.inputs.bbrv3_auto }} (${{ github.event.inputs.bbrv3_tag }})
-            - Lazy RCU + WQ power efficient：${{ github.event.inputs.lazy_rcu_wq_pe }}
-            - 禁用 KASAN：${{ github.event.inputs.disable_kasan }}
+            - Lazy RCU：${{ github.event.inputs.lazy_rcu_enable }}
+            - WQ power efficient：${{ github.event.inputs.wq_power_efficient_enable }}
             - 禁用 PM_DEBUG：${{ github.event.inputs.disable_pm_debug }}
             - 启用 PM_WAKELOCKS_GC：${{ github.event.inputs.enable_wakelocks_gc }}
             - Kyber 默认IO调度：${{ github.event.inputs.ssg_enable }}

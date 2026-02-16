@@ -360,6 +360,7 @@ fi
 #添加对 Mountify (backslashxx/mountify) 模块的支持
 echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_FILE"
 echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_FILE"
+echo "CONFIG_ZRAM_WRITEBACK=y" >> "$DEFCONFIG_FILE"
 
 # 开启O2编译优化配置
 echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "$DEFCONFIG_FILE"
@@ -369,14 +370,14 @@ echo "CONFIG_HEADERS_INSTALL=n" >> "$DEFCONFIG_FILE"
 # Lazy RCU + power-efficient workqueue defaults
 if [[ "$APPLY_LAZY_WQ_PE" == "y" || "$APPLY_LAZY_WQ_PE" == "Y" ]]; then
   echo "CONFIG_RCU_NOCB_CPU=y" >> "$DEFCONFIG_FILE"
+  echo "CONFIG_RCU_NOCB_CPU_DEFAULT_ALL=y" >> "$DEFCONFIG_FILE"
   echo "CONFIG_RCU_LAZY=y" >> "$DEFCONFIG_FILE"
   echo "CONFIG_RCU_LAZY_DEFAULT_OFF=n" >> "$DEFCONFIG_FILE"
   echo "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y" >> "$DEFCONFIG_FILE"
 fi
 
 if [[ "$APPLY_DISABLE_KASAN" == "y" || "$APPLY_DISABLE_KASAN" == "Y" ]]; then
-  echo "# CONFIG_KASAN is not set" >> "$DEFCONFIG_FILE"
-  echo "# CONFIG_KASAN_HW_TAGS is not set" >> "$DEFCONFIG_FILE"
+  echo ">>> 警告: 6.1.118 基线关闭 KASAN 存在首屏卡死/重启风险，已忽略该选项并保持 KASAN 开启"
 fi
 
 if [[ "$APPLY_DISABLE_PM_DEBUG" == "y" || "$APPLY_DISABLE_PM_DEBUG" == "Y" ]]; then

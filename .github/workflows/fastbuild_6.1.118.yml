@@ -565,59 +565,42 @@ jobs:
             fi
           done
 
-          # 6.1.118 兼容补丁：裁剪 BBRv3 对 PLB/BPF kfunc/TLP 新符号的硬依赖
-          python - <<'PY'
-from pathlib import Path
-import re
-import sys
+          # 6.1.118 compat: trim hard deps from BBRv3 (PLB/BPF kfunc/TLP symbols)
+          if [[ ! -f common/net/ipv4/tcp_bbr.c ]]; then
+            echo "::error::missing common/net/ipv4/tcp_bbr.c"
+            exit 1
+          fi
 
-p = Path("common/net/ipv4/tcp_bbr.c")
-if not p.exists():
-    print("::error::missing common/net/ipv4/tcp_bbr.c")
-    sys.exit(1)
+          if ! grep -q "BBRv3 compat for older 6.1 vendor trees" common/net/ipv4/tcp_bbr.c; then
+            awk '
+              { print }
+              $0 == "#include \"tcp_dctcp.h\"" {
+                print ""
+                print "/* BBRv3 compat for older 6.1 vendor trees (no PLB/BPF kfunc/TLP event). */"
+                print "#ifndef __bpf_kfunc"
+                print "#define __bpf_kfunc"
+                print "#endif"
+                print "#ifndef TCP_ECN_LOW"
+                print "#define TCP_ECN_LOW 0"
+                print "#endif"
+                print "#ifndef CA_EVENT_TLP_RECOVERY"
+                print "#define CA_EVENT_TLP_RECOVERY ((enum tcp_ca_event)-1)"
+                print "#endif"
+                print "#ifndef TCP_PLB_SCALE"
+                print "#define TCP_PLB_SCALE BBR_SCALE"
+                print "struct tcp_plb_state {"
+                print "\tu32 pause_until;"
+                print "};"
+                print "static inline void tcp_plb_update_state(struct sock *sk, struct tcp_plb_state *plb, int ce_ratio) { }"
+                print "static inline void tcp_plb_check_rehash(struct sock *sk, struct tcp_plb_state *plb) { }"
+                print "static inline void tcp_plb_update_state_upon_rto(struct sock *sk, struct tcp_plb_state *plb) { }"
+                print "#endif"
+              }
+            ' common/net/ipv4/tcp_bbr.c > common/net/ipv4/tcp_bbr.c.new
+            mv common/net/ipv4/tcp_bbr.c.new common/net/ipv4/tcp_bbr.c
+          fi
 
-s = p.read_text(encoding="utf-8")
-marker = "BBRv3 compat for older 6.1 vendor trees"
-if marker not in s:
-    anchor = '#include "tcp_dctcp.h"\n'
-    compat = '''#include "tcp_dctcp.h"
-
-/* BBRv3 compat for older 6.1 vendor trees (no PLB/BPF kfunc/TLP event). */
-#ifndef __bpf_kfunc
-#define __bpf_kfunc
-#endif
-#ifndef TCP_ECN_LOW
-#define TCP_ECN_LOW 0
-#endif
-#ifndef CA_EVENT_TLP_RECOVERY
-#define CA_EVENT_TLP_RECOVERY ((enum tcp_ca_event)-1)
-#endif
-#ifndef TCP_PLB_SCALE
-#define TCP_PLB_SCALE BBR_SCALE
-struct tcp_plb_state {
-\tu32 pause_until;
-};
-static inline void tcp_plb_update_state(struct sock *sk, struct tcp_plb_state *plb, int ce_ratio) { }
-static inline void tcp_plb_check_rehash(struct sock *sk, struct tcp_plb_state *plb) { }
-static inline void tcp_plb_update_state_upon_rto(struct sock *sk, struct tcp_plb_state *plb) { }
-#endif
-'''
-    if anchor not in s:
-        print("::error::BBRv3 compat anchor not found")
-        sys.exit(1)
-    s = s.replace(anchor, compat, 1)
-
-pattern = re.compile(
-    r"want_ecn_alpha\s*=\s*\(bbr->ecn_eligible\s*\|\|\s*\(bbr_can_use_ecn\(sk\)\s*&&\s*READ_ONCE\(net->ipv4\.sysctl_tcp_plb_enabled\)\)\);",
-    re.S,
-)
-s, n = pattern.subn("want_ecn_alpha = bbr->ecn_eligible;", s, count=1)
-if n == 0:
-    print("::warning::PLB gate rewrite not applied (pattern not found)")
-
-p.write_text(s, encoding="utf-8", newline="\n")
-print("Applied BBRv3 6.1.118 compat patch")
-PY
+          python -c "from pathlib import Path; import re; p=Path('common/net/ipv4/tcp_bbr.c'); s=p.read_text(encoding='utf-8'); s2=re.sub(r'want_ecn_alpha\\s*=\\s*\\(bbr->ecn_eligible\\s*\\|\\|\\s*\\(bbr_can_use_ecn\\(sk\\)\\s*&&\\s*READ_ONCE\\(net->ipv4\\.sysctl_tcp_plb_enabled\\)\\)\\);','want_ecn_alpha = bbr->ecn_eligible;', s, count=1, flags=re.S); p.write_text(s2, encoding='utf-8', newline='\\n')"
 
           if grep -q "sysctl_tcp_plb_enabled" common/net/ipv4/tcp_bbr.c; then
             echo "::error::BBRv3 compat patch failed: sysctl_tcp_plb_enabled still present"

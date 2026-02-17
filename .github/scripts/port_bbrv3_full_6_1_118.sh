@@ -105,7 +105,7 @@ echo "[BBRv3] validating compat results"
 [[ -f "${COMMON_DIR}/net/ipv4/tcp_bbr.c" ]] || fatal "missing patched tcp_bbr.c"
 [[ -f "${COMMON_DIR}/include/net/inet_connection_sock.h" ]] || fatal "missing inet_connection_sock.h"
 
-grep -q 'icsk_ca_priv\[160 / sizeof(u64)\]' "${COMMON_DIR}/include/net/inet_connection_sock.h" || fatal "ICSK_CA_PRIV_SIZE enlargement missing"
+grep -Eq 'icsk_ca_priv\[[[:space:]]*160[[:space:]]*/[[:space:]]*sizeof\(u64\)\]' "${COMMON_DIR}/include/net/inet_connection_sock.h" || fatal "ICSK_CA_PRIV_SIZE enlargement missing"
 
 grep -q 'inflight_hi' "${COMMON_DIR}/net/ipv4/tcp_bbr.c" || fatal "BBRv3 feature marker inflight_hi missing"
 grep -q 'bw_probe_up_rounds' "${COMMON_DIR}/net/ipv4/tcp_bbr.c" || fatal "BBRv3 feature marker bw_probe_up_rounds missing"

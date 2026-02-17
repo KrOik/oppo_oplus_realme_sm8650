@@ -176,6 +176,7 @@ BTF_H="${COMMON_DIR}/include/linux/btf.h"
 [[ -f "${BTF_H}" ]] || fatal "missing ${BTF_H}"
 python3 - "${BTF_H}" <<'PY'
 from pathlib import Path
+import re
 import sys
 p = Path(sys.argv[1])
 s = p.read_text(encoding='utf-8')
@@ -186,7 +187,7 @@ if "#define __bpf_kfunc" not in s:
     ins = (
         "\n"
         "#ifndef __bpf_kfunc\n"
-        "#define __bpf_kfunc __attribute__((__used__)) __attribute__((noinline))\n"
+        "#define __bpf_kfunc __used noinline\n"
         "#endif\n"
         "#ifndef __bpf_kfunc_start_defs\n"
         "#define __bpf_kfunc_start_defs()\n"
@@ -202,7 +203,8 @@ if "#define __bpf_kfunc" not in s:
         "#endif\n"
     )
     s = s.replace(anchor, anchor + ins, 1)
-    p.write_text(s, encoding='utf-8', newline='\n')
+s = re.sub(r"^#define __bpf_kfunc[^\n]*$", "#define __bpf_kfunc __used noinline", s, count=1, flags=re.MULTILINE)
+p.write_text(s, encoding='utf-8', newline='\n')
 PY
 
 # Ensure btf_ids.h has kfunc aliases if upstream sources reference them.

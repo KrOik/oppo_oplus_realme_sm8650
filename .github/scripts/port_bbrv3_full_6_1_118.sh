@@ -40,6 +40,24 @@ echo "[BBRv3] applying compat patch"
 git -C "${COMMON_DIR}" apply --check "${PATCH_FILE}"
 git -C "${COMMON_DIR}" apply "${PATCH_FILE}"
 
+# Enforce CA private storage size required by BBRv3 on 6.1 vendor trees.
+ICSK_H="${COMMON_DIR}/include/net/inet_connection_sock.h"
+[[ -f "${ICSK_H}" ]] || fatal "missing ${ICSK_H}"
+python3 - "${ICSK_H}" <<'PY'
+from pathlib import Path
+import re
+import sys
+p = Path(sys.argv[1])
+s = p.read_text(encoding='utf-8')
+target = "icsk_ca_priv[160 / sizeof(u64)]"
+if target not in s:
+    s2, n = re.subn(r'icsk_ca_priv\[[^\]]+\]', target, s, count=1)
+    if n != 1:
+        raise SystemExit("failed to rewrite icsk_ca_priv size")
+    s = s2
+    p.write_text(s, encoding='utf-8', newline='\n')
+PY
+
 # Ensure btf.h provides __bpf_kfunc attributes so kfunc symbols are retained.
 BTF_H="${COMMON_DIR}/include/linux/btf.h"
 [[ -f "${BTF_H}" ]] || fatal "missing ${BTF_H}"
@@ -103,9 +121,9 @@ PY
 
 echo "[BBRv3] validating compat results"
 [[ -f "${COMMON_DIR}/net/ipv4/tcp_bbr.c" ]] || fatal "missing patched tcp_bbr.c"
-[[ -f "${COMMON_DIR}/include/net/inet_connection_sock.h" ]] || fatal "missing inet_connection_sock.h"
+[[ -f "${ICSK_H}" ]] || fatal "missing inet_connection_sock.h"
 
-grep -Eq 'icsk_ca_priv\[[[:space:]]*160[[:space:]]*/[[:space:]]*sizeof\(u64\)\]' "${COMMON_DIR}/include/net/inet_connection_sock.h" || fatal "ICSK_CA_PRIV_SIZE enlargement missing"
+grep -Eq 'icsk_ca_priv\[[[:space:]]*160[[:space:]]*/[[:space:]]*sizeof\(u64\)\]' "${ICSK_H}" || fatal "ICSK_CA_PRIV_SIZE enlargement missing"
 
 grep -q 'inflight_hi' "${COMMON_DIR}/net/ipv4/tcp_bbr.c" || fatal "BBRv3 feature marker inflight_hi missing"
 grep -q 'bw_probe_up_rounds' "${COMMON_DIR}/net/ipv4/tcp_bbr.c" || fatal "BBRv3 feature marker bw_probe_up_rounds missing"

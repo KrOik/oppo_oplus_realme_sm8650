@@ -915,6 +915,87 @@ download_and_apply_commit_patch() {
   fi
 }
 
+backport_cong_control_api() {
+  local tcp_h="${COMMON_DIR}/include/net/tcp.h"
+  local tcp_input="${COMMON_DIR}/net/ipv4/tcp_input.c"
+  local tcp_brutal="${COMMON_DIR}/net/ipv4/tcp_brutal.c"
+
+  [[ -f "${tcp_h}" ]] || fatal "missing ${tcp_h}"
+  [[ -f "${tcp_input}" ]] || fatal "missing ${tcp_input}"
+
+  python3 - "${tcp_h}" "${tcp_input}" "${tcp_brutal}" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+tcp_h = Path(sys.argv[1])
+tcp_input = Path(sys.argv[2])
+tcp_brutal = Path(sys.argv[3])
+
+h = tcp_h.read_text(encoding="utf-8")
+if "void (*cong_control)(struct sock *sk, u32 ack, int flag," not in h:
+    old = "void (*cong_control)(struct sock *sk, const struct rate_sample *rs);"
+    new = (
+        "void (*cong_control)(struct sock *sk, u32 ack, int flag,\n"
+        "\t\t\t     const struct rate_sample *rs);"
+    )
+    if old in h:
+        h = h.replace(old, new, 1)
+    else:
+        h_new, n = re.subn(
+            r'void\s+\(\*cong_control\)\(struct sock \*sk,\s*const struct rate_sample \*rs\);',
+            new,
+            h,
+            count=1,
+            flags=re.S,
+        )
+        if n != 1:
+            raise SystemExit("failed to backport cong_control() signature in include/net/tcp.h")
+        h = h_new
+tcp_h.write_text(h, encoding="utf-8", newline="\n")
+
+i = tcp_input.read_text(encoding="utf-8")
+if "icsk->icsk_ca_ops->cong_control(sk, ack, flag, rs);" not in i:
+    if "icsk->icsk_ca_ops->cong_control(sk, rs);" not in i:
+        raise SystemExit("failed to locate cong_control() call site in net/ipv4/tcp_input.c")
+    i = i.replace(
+        "icsk->icsk_ca_ops->cong_control(sk, rs);",
+        "icsk->icsk_ca_ops->cong_control(sk, ack, flag, rs);",
+        1,
+    )
+tcp_input.write_text(i, encoding="utf-8", newline="\n")
+
+if tcp_brutal.exists():
+    b = tcp_brutal.read_text(encoding="utf-8")
+    legacy_block = (
+        "#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)\n"
+        "static void brutal_main(struct sock *sk, u32 ack, int flag, const struct rate_sample *rs)\n"
+        "#else\n"
+        "static void brutal_main(struct sock *sk, const struct rate_sample *rs)\n"
+        "#endif\n"
+    )
+    if legacy_block in b:
+        b = b.replace(
+            legacy_block,
+            "static void brutal_main(struct sock *sk, u32 ack, int flag, const struct rate_sample *rs)\n",
+            1,
+        )
+    elif "static void brutal_main(struct sock *sk, const struct rate_sample *rs)" in b:
+        b = b.replace(
+            "static void brutal_main(struct sock *sk, const struct rate_sample *rs)",
+            "static void brutal_main(struct sock *sk, u32 ack, int flag, const struct rate_sample *rs)",
+            1,
+        )
+    if "static void brutal_main(struct sock *sk, u32 ack, int flag, const struct rate_sample *rs)" in b and "(void)ack;" not in b:
+        b = b.replace(
+            "    struct brutal *brutal = inet_csk_ca(sk);\n",
+            "    struct brutal *brutal = inet_csk_ca(sk);\n\n    (void)ack;\n    (void)flag;\n",
+            1,
+        )
+    tcp_brutal.write_text(b, encoding="utf-8", newline="\n")
+PY
+}
+
 backport_kfunc_macros() {
   local btf_h="${COMMON_DIR}/include/linux/btf.h"
   local btf_ids_h="${COMMON_DIR}/include/linux/btf_ids.h"
@@ -1011,6 +1092,9 @@ done
 
 echo "[BBRv3] applying kfunc macro compat backport for 6.1 toolchain"
 backport_kfunc_macros
+
+echo "[BBRv3] backporting cong_control API parity for 6.1"
+backport_cong_control_api
 
 echo "[BBRv3] validating compat results"
 TCP_BBR="${COMMON_DIR}/net/ipv4/tcp_bbr.c"

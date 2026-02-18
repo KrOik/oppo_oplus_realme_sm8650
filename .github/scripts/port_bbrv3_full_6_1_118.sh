@@ -841,8 +841,39 @@ PY
       return 0
       ;;
     cb31f3d02b1d)
-      echo "[BBRv3] resolving known 3-way conflict for ${short_sha} by taking upstream sides for conflicted files"
-      git -C "${COMMON_DIR}" checkout --theirs -- include/net/inet_connection_sock.h net/ipv4/Kconfig net/ipv4/tcp_bbr.c || return 1
+      echo "[BBRv3] resolving known 3-way conflict for ${short_sha} with 6.1-safe upstream-equivalent merge"
+      git -C "${COMMON_DIR}" checkout --ours -- include/net/inet_connection_sock.h || return 1
+      git -C "${COMMON_DIR}" checkout --theirs -- net/ipv4/Kconfig net/ipv4/tcp_bbr.c || return 1
+      python3 - "${COMMON_DIR}" <<'PY' || return 1
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+icsk_h = root / "include/net/inet_connection_sock.h"
+
+s = icsk_h.read_text(encoding="utf-8")
+
+s, n = re.subn(
+    r'#define\s+ICSK_CA_PRIV_SIZE[^\n]*',
+    '#define ICSK_CA_PRIV_SIZE      (144)',
+    s,
+    count=1,
+)
+if n != 1:
+    raise SystemExit("failed to locate ICSK_CA_PRIV_SIZE define in include/net/inet_connection_sock.h")
+
+s, n = re.subn(
+    r'u64\s+[^\n]*icsk_ca_priv\[[^\]]+\];',
+    '\tu64\t\t\t  icsk_ca_priv[ICSK_CA_PRIV_SIZE / sizeof(u64)];',
+    s,
+    count=1,
+)
+if n != 1:
+    raise SystemExit("failed to locate icsk_ca_priv array in include/net/inet_connection_sock.h")
+
+icsk_h.write_text(s, encoding="utf-8", newline="\n")
+PY
       git -C "${COMMON_DIR}" add -- include/net/inet_connection_sock.h include/net/tcp.h include/uapi/linux/inet_diag.h net/ipv4/Kconfig net/ipv4/tcp_bbr.c || return 1
       return 0
       ;;

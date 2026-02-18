@@ -181,6 +181,73 @@ PY
   echo "[BBRv3] prepared 3-way ancestor blobs for ${short_sha} (parent ${parent_sha})"
 }
 
+resolve_known_commit_conflict() {
+  local short_sha="$1"
+
+  case "${short_sha}" in
+    a627517bdfe0)
+      echo "[BBRv3] resolving known 3-way conflict for ${short_sha} with upstream-equivalent edits"
+      git -C "${COMMON_DIR}" checkout --ours -- include/net/tcp.h net/ipv4/tcp_rate.c
+      python3 - "${COMMON_DIR}" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+tcp_h = root / "include/net/tcp.h"
+tcp_rate = root / "net/ipv4/tcp_rate.c"
+
+s = tcp_h.read_text(encoding="utf-8")
+if "static inline u32 tcp_stamp32_us_delta(u32 t1, u32 t0)" not in s:
+    anchor = (
+        "static inline u32 tcp_stamp_us_delta(u64 t1, u64 t0)\n"
+        "{\n"
+        "\treturn max_t(s64, t1 - t0, 0);\n"
+        "}\n"
+    )
+    insert = (
+        anchor
+        "\n"
+        "static inline u32 tcp_stamp32_us_delta(u32 t1, u32 t0)\n"
+        "{\n"
+        "\treturn max_t(s32, t1 - t0, 0);\n"
+        "}\n"
+    )
+    if anchor not in s:
+        raise SystemExit("failed to locate tcp_stamp_us_delta() anchor in include/net/tcp.h")
+    s = s.replace(anchor, insert, 1)
+
+s_new = re.sub(r'(\s)u64(\s+first_tx_mstamp;)', r'\1u32\2', s, count=1)
+if s_new == s:
+    raise SystemExit("failed to rewrite first_tx_mstamp type in include/net/tcp.h")
+s = s_new
+s_new = re.sub(r'(\s)u64(\s+delivered_mstamp;)', r'\1u32\2', s, count=1)
+if s_new == s:
+    raise SystemExit("failed to rewrite delivered_mstamp type in include/net/tcp.h")
+s = s_new
+tcp_h.write_text(s, encoding="utf-8", newline="\n")
+
+t = tcp_rate.read_text(encoding="utf-8")
+if "tcp_stamp32_us_delta(tp->first_tx_mstamp," not in t:
+    t_new = t.replace("tcp_stamp_us_delta(tp->first_tx_mstamp,", "tcp_stamp32_us_delta(tp->first_tx_mstamp,", 1)
+    if t_new == t:
+        raise SystemExit("failed to rewrite send-phase timestamp helper in net/ipv4/tcp_rate.c")
+    t = t_new
+if "tcp_stamp32_us_delta(tp->tcp_mstamp," not in t:
+    t_new = t.replace("tcp_stamp_us_delta(tp->tcp_mstamp,", "tcp_stamp32_us_delta(tp->tcp_mstamp,", 1)
+    if t_new == t:
+        raise SystemExit("failed to rewrite ack-phase timestamp helper in net/ipv4/tcp_rate.c")
+    t = t_new
+tcp_rate.write_text(t, encoding="utf-8", newline="\n")
+PY
+      git -C "${COMMON_DIR}" add -- include/net/tcp.h net/ipv4/tcp_rate.c
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 download_and_apply_commit_patch() {
   local short_sha="$1"
   local patch_file="${PATCH_DIR}/${short_sha}.patch"
@@ -197,6 +264,10 @@ download_and_apply_commit_patch() {
 
   echo "[BBRv3] applying upstream patch ${short_sha}"
   if ! git -C "${COMMON_DIR}" am -3 "${patch_file}"; then
+    if resolve_known_commit_conflict "${short_sha}" && git -C "${COMMON_DIR}" am --continue; then
+      echo "[BBRv3] resolved and continued patch ${short_sha}"
+      return 0
+    fi
     git -C "${COMMON_DIR}" am --abort || true
     fatal "failed to apply upstream patch ${short_sha}"
   fi

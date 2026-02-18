@@ -94,6 +94,93 @@ prepare_common_repo_for_am() {
   fi
 }
 
+prefetch_patch_ancestor_blobs() {
+  local short_sha="$1"
+  local patch_file="$2"
+  local full_sha="$3"
+  local parent_sha
+
+  parent_sha="$(
+    python3 - "${patch_file}" "${full_sha}" "${COMMON_DIR}" <<'PY'
+from pathlib import Path
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+import urllib.request
+
+patch_file = Path(sys.argv[1])
+full_sha = sys.argv[2]
+common_dir = sys.argv[3]
+
+api_headers = {
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "bbrv3-full-port-script",
+}
+token = os.environ.get("GITHUB_TOKEN")
+if token:
+    api_headers["Authorization"] = f"Bearer {token}"
+
+commit_url = f"https://api.github.com/repos/google/bbr/commits/{full_sha}"
+req = urllib.request.Request(commit_url, headers=api_headers)
+with urllib.request.urlopen(req) as resp:
+    commit = json.load(resp)
+parents = commit.get("parents") or []
+if not parents:
+    raise SystemExit(f"no parent commit found for {full_sha}")
+parent_sha = parents[0]["sha"]
+
+entries = []
+current_old_path = None
+for line in patch_file.read_text(encoding="utf-8", errors="replace").splitlines():
+    if line.startswith("diff --git "):
+        parts = line.split()
+        if len(parts) >= 4 and parts[2].startswith("a/"):
+            current_old_path = parts[2][2:]
+        else:
+            current_old_path = None
+        continue
+    if current_old_path and line.startswith("index "):
+        m = re.match(r"index ([0-9a-f]+)\.\.([0-9a-f]+)(?: \d+)?$", line.strip())
+        if m:
+            old_abbrev = m.group(1)
+            entries.append((current_old_path, old_abbrev))
+        current_old_path = None
+
+raw_headers = {"User-Agent": "bbrv3-full-port-script"}
+for old_path, old_abbrev in entries:
+    if set(old_abbrev) == {"0"}:
+        continue
+    quoted_path = urllib.parse.quote(old_path, safe="/")
+    raw_url = f"https://raw.githubusercontent.com/google/bbr/{parent_sha}/{quoted_path}"
+    raw_req = urllib.request.Request(raw_url, headers=raw_headers)
+    with urllib.request.urlopen(raw_req) as resp:
+        blob_data = resp.read()
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp.write(blob_data)
+        tmp_path = tmp.name
+    try:
+        full_blob = subprocess.check_output(
+            ["git", "-C", common_dir, "hash-object", "-w", tmp_path],
+            text=True,
+        ).strip()
+    finally:
+        os.unlink(tmp_path)
+    if not full_blob.startswith(old_abbrev):
+        raise SystemExit(
+            f"blob prefix mismatch for {old_path}: expected prefix {old_abbrev}, got {full_blob}"
+        )
+
+print(parent_sha)
+PY
+  )" || fatal "failed to prefetch upstream ancestor blobs for ${short_sha}"
+
+  echo "[BBRv3] prepared 3-way ancestor blobs for ${short_sha} (parent ${parent_sha})"
+}
+
 download_and_apply_commit_patch() {
   local short_sha="$1"
   local patch_file="${PATCH_DIR}/${short_sha}.patch"
@@ -106,6 +193,7 @@ download_and_apply_commit_patch() {
   patch_from="$(sed -n 's/^From \([0-9a-f]\{40\}\).*/\1/p' "${patch_file}" | head -n1)"
   [[ -n "${patch_from}" ]] || fatal "patch ${short_sha} missing 'From <sha>' header"
   [[ "${patch_from}" == "${short_sha}"* ]] || fatal "patch ${short_sha} header mismatch: ${patch_from}"
+  prefetch_patch_ancestor_blobs "${short_sha}" "${patch_file}" "${patch_from}"
 
   echo "[BBRv3] applying upstream patch ${short_sha}"
   if ! git -C "${COMMON_DIR}" am -3 "${patch_file}"; then

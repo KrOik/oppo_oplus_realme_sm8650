@@ -715,6 +715,131 @@ PY
       git -C "${COMMON_DIR}" add -- include/linux/tcp.h net/ipv4/tcp_output.c || return 1
       return 0
       ;;
+    9120f8037e8b)
+      echo "[BBRv3] resolving known 3-way conflict for ${short_sha} with upstream-equivalent edits"
+      git -C "${COMMON_DIR}" checkout --ours -- include/net/tcp.h include/uapi/linux/rtnetlink.h net/ipv4/tcp_minisocks.c net/ipv4/tcp_output.c || return 1
+      python3 - "${COMMON_DIR}" <<'PY' || return 1
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+tcp_h = root / "include/net/tcp.h"
+rtnetlink_h = root / "include/uapi/linux/rtnetlink.h"
+tcp_minisocks = root / "net/ipv4/tcp_minisocks.c"
+tcp_output = root / "net/ipv4/tcp_output.c"
+
+h = tcp_h.read_text(encoding="utf-8")
+if "TCP_ECN_LOW" not in h:
+    marker = "#define\tTCP_ECN_SEEN\t\t8\n"
+    if marker in h:
+        h = h.replace(marker, marker + "#define\tTCP_ECN_LOW\t\t16\n", 1)
+    else:
+        h_new, n = re.subn(
+            r'(#define\s+TCP_ECN_SEEN\s+8\s*\n)',
+            r'\1#define\tTCP_ECN_LOW\t\t16\n',
+            h,
+            count=1,
+        )
+        if n != 1:
+            raise SystemExit("failed to add TCP_ECN_LOW define in include/net/tcp.h")
+        h = h_new
+if "tcp_set_ecn_low_from_dst" not in h:
+    anchor = "/* Compute the actual rto_min value */\n"
+    helper = (
+        "static inline void tcp_set_ecn_low_from_dst(struct sock *sk,\n"
+        "\t\t\t\t\t    const struct dst_entry *dst)\n"
+        "{\n"
+        "\tstruct tcp_sock *tp = tcp_sk(sk);\n"
+        "\n"
+        "\tif (dst_feature(dst, RTAX_FEATURE_ECN_LOW))\n"
+        "\t\ttp->ecn_flags |= TCP_ECN_LOW;\n"
+        "}\n"
+    )
+    if anchor not in h:
+        raise SystemExit("failed to locate rto_min anchor for tcp_set_ecn_low_from_dst()")
+    h = h.replace(anchor, helper + "\n" + anchor, 1)
+tcp_h.write_text(h, encoding="utf-8", newline="\n")
+
+r = rtnetlink_h.read_text(encoding="utf-8")
+if "RTAX_FEATURE_ECN_LOW" not in r:
+    if "#define RTAX_FEATURE_TCP_USEC_TS" in r:
+        marker = "#define RTAX_FEATURE_TCP_USEC_TS\t(1 << 4)\n"
+        if marker not in r:
+            raise SystemExit("failed to locate RTAX_FEATURE_TCP_USEC_TS in include/uapi/linux/rtnetlink.h")
+        r = r.replace(marker, marker + "#define RTAX_FEATURE_ECN_LOW\t\t(1 << 5)\n", 1)
+    else:
+        marker = "#define RTAX_FEATURE_ALLFRAG\t(1 << 3)\n"
+        if marker not in r:
+            raise SystemExit("failed to locate RTAX_FEATURE_ALLFRAG in include/uapi/linux/rtnetlink.h")
+        r = r.replace(marker, marker + "#define RTAX_FEATURE_ECN_LOW\t\t(1 << 5)\n", 1)
+if "RTAX_FEATURE_ECN_LOW" in r and "RTAX_FEATURE_MASK" in r and "RTAX_FEATURE_ECN_LOW)" not in r:
+    if "RTAX_FEATURE_TCP_USEC_TS)" in r:
+        r = r.replace(
+            "RTAX_FEATURE_TCP_USEC_TS)",
+            "RTAX_FEATURE_TCP_USEC_TS | \\\n\t\t\t\t RTAX_FEATURE_ECN_LOW)",
+            1,
+        )
+    elif "RTAX_FEATURE_ALLFRAG)" in r:
+        r = r.replace(
+            "RTAX_FEATURE_ALLFRAG)",
+            "RTAX_FEATURE_ALLFRAG | \\\n\t\t\t\t RTAX_FEATURE_ECN_LOW)",
+            1,
+        )
+    else:
+        raise SystemExit("failed to extend RTAX_FEATURE_MASK with RTAX_FEATURE_ECN_LOW")
+rtnetlink_h.write_text(r, encoding="utf-8", newline="\n")
+
+m = tcp_minisocks.read_text(encoding="utf-8")
+if "tcp_set_ecn_low_from_dst(sk, dst);" not in m:
+    anchor = "\tbool ca_got_dst = false;\n"
+    if anchor not in m:
+        raise SystemExit("failed to locate ca_got_dst anchor in net/ipv4/tcp_minisocks.c")
+    m = m.replace(anchor, anchor + "\n\ttcp_set_ecn_low_from_dst(sk, dst);\n", 1)
+tcp_minisocks.write_text(m, encoding="utf-8", newline="\n")
+
+o = tcp_output.read_text(encoding="utf-8")
+if "tcp_set_ecn_low_from_dst(sk, dst);" not in o:
+    use_ecn_anchor = (
+        "\tbool use_ecn = READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_ecn) == 1 ||\n"
+        "\t\ttcp_ca_needs_ecn(sk) || bpf_needs_ecn;\n"
+    )
+    if "const struct dst_entry *dst = __sk_dst_get(sk);" not in o:
+        if use_ecn_anchor not in o:
+            raise SystemExit("failed to locate use_ecn anchor in net/ipv4/tcp_output.c")
+        o = o.replace(use_ecn_anchor, use_ecn_anchor + "\tconst struct dst_entry *dst = __sk_dst_get(sk);\n", 1)
+    old_block = (
+        "\tif (!use_ecn) {\n"
+        "\t\tconst struct dst_entry *dst = __sk_dst_get(sk);\n"
+        "\n"
+        "\t\tif (dst && dst_feature(dst, RTAX_FEATURE_ECN))\n"
+        "\t\t\tuse_ecn = true;\n"
+        "\t}\n"
+    )
+    if old_block in o:
+        o = o.replace(
+            old_block,
+            (
+                "\tif (!use_ecn) {\n"
+                "\t\tif (dst && dst_feature(dst, RTAX_FEATURE_ECN))\n"
+                "\t\t\tuse_ecn = true;\n"
+                "\t}\n"
+            ),
+            1,
+        )
+    ecn_anchor = "\t\tif (tcp_ca_needs_ecn(sk) || bpf_needs_ecn)\n\t\t\tINET_ECN_xmit(sk);\n"
+    if ecn_anchor not in o:
+        raise SystemExit("failed to locate INET_ECN_xmit() anchor in net/ipv4/tcp_output.c")
+    o = o.replace(
+        ecn_anchor,
+        ecn_anchor + "\n\t\tif (dst)\n\t\t\ttcp_set_ecn_low_from_dst(sk, dst);\n",
+        1,
+    )
+tcp_output.write_text(o, encoding="utf-8", newline="\n")
+PY
+      git -C "${COMMON_DIR}" add -- include/net/tcp.h include/uapi/linux/rtnetlink.h net/ipv4/tcp_minisocks.c net/ipv4/tcp_output.c || return 1
+      return 0
+      ;;
   esac
 
   return 1

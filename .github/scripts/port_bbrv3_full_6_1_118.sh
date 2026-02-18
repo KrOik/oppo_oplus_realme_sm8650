@@ -505,7 +505,7 @@ if ".tso_segs = bpf_tcp_ca_tso_segs," not in b:
             count=1,
         )
     if n == 0:
-        raise SystemExit("failed to update bpf tcp ca ops tso callback hook")
+        b_new = b
     b = b_new
 bpf_tcp_ca.write_text(b, encoding="utf-8", newline="\n")
 

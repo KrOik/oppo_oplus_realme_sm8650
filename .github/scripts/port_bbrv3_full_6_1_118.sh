@@ -229,14 +229,24 @@ if "u32 delivered_mstamp;" not in s:
 tcp_h.write_text(s, encoding="utf-8", newline="\n")
 
 t = tcp_rate.read_text(encoding="utf-8")
-if "tcp_stamp32_us_delta(tp->first_tx_mstamp," not in t:
-    t_new = t.replace("tcp_stamp_us_delta(tp->first_tx_mstamp,", "tcp_stamp32_us_delta(tp->first_tx_mstamp,", 1)
-    if t_new == t:
+if not re.search(r'tcp_stamp32_us_delta\(\s*tp->first_tx_mstamp\s*,', t):
+    t_new, n = re.subn(
+        r'tcp_stamp_us_delta\(\s*tp->first_tx_mstamp\s*,',
+        'tcp_stamp32_us_delta(tp->first_tx_mstamp,',
+        t,
+        count=1,
+    )
+    if n != 1:
         raise SystemExit("failed to rewrite send-phase timestamp helper in net/ipv4/tcp_rate.c")
     t = t_new
-if "tcp_stamp32_us_delta(tp->tcp_mstamp," not in t:
-    t_new = t.replace("tcp_stamp_us_delta(tp->tcp_mstamp,", "tcp_stamp32_us_delta(tp->tcp_mstamp,", 1)
-    if t_new == t:
+if not re.search(r'tcp_stamp32_us_delta\(\s*tp->tcp_mstamp\s*,', t):
+    t_new, n = re.subn(
+        r'tcp_stamp_us_delta\(\s*tp->tcp_mstamp\s*,',
+        'tcp_stamp32_us_delta(tp->tcp_mstamp,',
+        t,
+        count=1,
+    )
+    if n != 1:
         raise SystemExit("failed to rewrite ack-phase timestamp helper in net/ipv4/tcp_rate.c")
     t = t_new
 tcp_rate.write_text(t, encoding="utf-8", newline="\n")

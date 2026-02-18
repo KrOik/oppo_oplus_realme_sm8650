@@ -597,6 +597,70 @@ PY
       git -C "${COMMON_DIR}" add -- include/net/tcp.h net/ipv4/bpf_tcp_ca.c net/ipv4/tcp_bbr.c net/ipv4/tcp_output.c || return 1
       return 0
       ;;
+    4d2e56435d43)
+      echo "[BBRv3] resolving known 3-way conflict for ${short_sha} with upstream-equivalent edits"
+      git -C "${COMMON_DIR}" checkout --ours -- include/linux/tcp.h net/ipv4/tcp.c net/ipv4/tcp_cong.c net/ipv4/tcp_input.c || return 1
+      python3 - "${COMMON_DIR}" <<'PY' || return 1
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+linux_tcp = root / "include/linux/tcp.h"
+tcp_c = root / "net/ipv4/tcp.c"
+tcp_cong = root / "net/ipv4/tcp_cong.c"
+tcp_input = root / "net/ipv4/tcp_input.c"
+
+s = linux_tcp.read_text(encoding="utf-8")
+if "fast_ack_mode" not in s:
+    s_new, n = re.subn(
+        r'(u8\s+dup_ack_counter:2,\n\s*tlp_retrans:1,\s*/\* TLP is a retransmission \*/\n\s*)unused:5;',
+        r'\1fast_ack_mode:1,\t/* ack ASAP if >1 rcv_mss received? */\n\t\tunused:4;',
+        s,
+        count=1,
+    )
+    if n != 1:
+        raise SystemExit("failed to add fast_ack_mode bitfield in include/linux/tcp.h")
+    s = s_new
+linux_tcp.write_text(s, encoding="utf-8", newline="\n")
+
+c = tcp_c.read_text(encoding="utf-8")
+if "tp->fast_ack_mode = 0;" not in c:
+    anchor = "\ttp->rcv_ooopack = 0;\n"
+    if anchor not in c:
+        raise SystemExit("failed to locate rcv_ooopack reset in net/ipv4/tcp.c")
+    c = c.replace(anchor, anchor + "\ttp->fast_ack_mode = 0;\n", 1)
+tcp_c.write_text(c, encoding="utf-8", newline="\n")
+
+g = tcp_cong.read_text(encoding="utf-8")
+if "tcp_sk(sk)->fast_ack_mode = 0;" not in g:
+    anchor = "\ttcp_sk(sk)->prior_ssthresh = 0;\n"
+    if anchor not in g:
+        raise SystemExit("failed to locate prior_ssthresh reset in net/ipv4/tcp_cong.c")
+    g = g.replace(anchor, anchor + "\ttcp_sk(sk)->fast_ack_mode = 0;\n", 1)
+tcp_cong.write_text(g, encoding="utf-8", newline="\n")
+
+i = tcp_input.read_text(encoding="utf-8")
+if "tp->fast_ack_mode == 1 ||" not in i:
+    anchor = "if (((tp->rcv_nxt - tp->rcv_wup) > inet_csk(sk)->icsk_ack.rcv_mss &&\n"
+    if anchor not in i:
+        raise SystemExit("failed to locate __tcp_ack_snd_check() rcv_mss condition in net/ipv4/tcp_input.c")
+    i = i.replace(anchor, anchor + "\t     (tp->fast_ack_mode == 1 ||\n", 1)
+    close_old = "\t     __tcp_select_window(sk) >= tp->rcv_wnd)) ||\n"
+    close_new = "\t     __tcp_select_window(sk) >= tp->rcv_wnd))) ||\n"
+    if close_old in i:
+        i = i.replace(close_old, close_new, 1)
+    else:
+        close_old = "     __tcp_select_window(sk) >= tp->rcv_wnd)) ||\n"
+        if close_old in i:
+            i = i.replace(close_old, "     __tcp_select_window(sk) >= tp->rcv_wnd))) ||\n", 1)
+        else:
+            raise SystemExit("failed to update __tcp_ack_snd_check() fast_ack_mode closing condition")
+tcp_input.write_text(i, encoding="utf-8", newline="\n")
+PY
+      git -C "${COMMON_DIR}" add -- include/linux/tcp.h net/ipv4/tcp.c net/ipv4/tcp_cong.c net/ipv4/tcp_input.c || return 1
+      return 0
+      ;;
   esac
 
   return 1

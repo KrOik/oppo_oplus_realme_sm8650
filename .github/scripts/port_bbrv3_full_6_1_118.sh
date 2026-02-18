@@ -432,6 +432,139 @@ PY
       git -C "${COMMON_DIR}" add -- include/net/tcp.h net/ipv4/tcp_output.c || return 1
       return 0
       ;;
+    9163f4486be7)
+      echo "[BBRv3] resolving known 3-way conflict for ${short_sha} with upstream-equivalent edits"
+      git -C "${COMMON_DIR}" checkout --ours -- include/net/tcp.h net/ipv4/bpf_tcp_ca.c net/ipv4/tcp_bbr.c net/ipv4/tcp_output.c || return 1
+      python3 - "${COMMON_DIR}" <<'PY' || return 1
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+tcp_h = root / "include/net/tcp.h"
+bpf_tcp_ca = root / "net/ipv4/bpf_tcp_ca.c"
+tcp_bbr = root / "net/ipv4/tcp_bbr.c"
+tcp_output = root / "net/ipv4/tcp_output.c"
+
+h = tcp_h.read_text(encoding="utf-8")
+if "u32 (*tso_segs)(struct sock *sk, unsigned int mss_now);" not in h:
+    h_new = h.replace(
+        "u32 (*min_tso_segs)(struct sock *sk);",
+        "u32 (*tso_segs)(struct sock *sk, unsigned int mss_now);",
+        1,
+    )
+    if h_new == h:
+        raise SystemExit("failed to update tcp_congestion_ops tso callback signature")
+    h = h_new
+tcp_h.write_text(h, encoding="utf-8", newline="\n")
+
+b = bpf_tcp_ca.read_text(encoding="utf-8")
+if "static u32 bpf_tcp_ca_tso_segs(struct sock *sk, unsigned int mss_now)" not in b:
+    b_new = b.replace(
+        "static u32 bpf_tcp_ca_min_tso_segs(struct sock *sk)",
+        "static u32 bpf_tcp_ca_tso_segs(struct sock *sk, unsigned int mss_now)",
+        1,
+    )
+    if b_new == b:
+        raise SystemExit("failed to rename bpf_tcp_ca tso callback")
+    b = b_new
+if ".tso_segs = bpf_tcp_ca_tso_segs," not in b:
+    b_new = b.replace(
+        ".min_tso_segs = bpf_tcp_ca_min_tso_segs,",
+        ".tso_segs = bpf_tcp_ca_tso_segs,",
+        1,
+    )
+    if b_new == b:
+        raise SystemExit("failed to update bpf tcp ca ops tso callback hook")
+    b = b_new
+bpf_tcp_ca.write_text(b, encoding="utf-8", newline="\n")
+
+o = tcp_output.read_text(encoding="utf-8")
+if "ca_ops->min_tso_segs" in o:
+    old_block = (
+        "\tmin_tso = ca_ops->min_tso_segs ?\n"
+        "\t\t\tca_ops->min_tso_segs(sk) :\n"
+        "\t\t\tREAD_ONCE(sock_net(sk)->ipv4.sysctl_tcp_min_tso_segs);\n"
+        "\n"
+        "\ttso_segs = tcp_tso_autosize(sk, mss_now, min_tso);\n"
+    )
+    new_block = (
+        "\ttso_segs = ca_ops->tso_segs ?\n"
+        "\t\tca_ops->tso_segs(sk, mss_now) :\n"
+        "\t\ttcp_tso_autosize(sk, mss_now,\n"
+        "\t\t\t\t sock_net(sk)->ipv4.sysctl_tcp_min_tso_segs);\n"
+    )
+    if old_block not in o:
+        o = re.sub(
+            r'\s*min_tso\s*=\s*ca_ops->min_tso_segs[\s\S]*?tso_segs\s*=\s*tcp_tso_autosize\(sk,\s*mss_now,\s*min_tso\);\n',
+            "\n" + new_block,
+            o,
+            count=1,
+        )
+    else:
+        o = o.replace(old_block, new_block, 1)
+o = o.replace("u32 min_tso, tso_segs;", "u32 tso_segs;")
+tcp_output.write_text(o, encoding="utf-8", newline="\n")
+
+t = tcp_bbr.read_text(encoding="utf-8")
+if "static u32 bbr_tso_segs_generic(struct sock *sk, unsigned int mss_now," not in t:
+    min_fn = re.search(r'__bpf_kfunc static u32 bbr_min_tso_segs\(struct sock \*sk\)\n\{.*?\n\}\n', t, flags=re.S)
+    if not min_fn:
+        raise SystemExit("failed to locate bbr_min_tso_segs() in tcp_bbr.c")
+    add = (
+        "\n/* Return the number of segments BBR would like in a TSO/GSO skb, given\n"
+        " * a particular max gso size as a constraint.\n"
+        " */\n"
+        "static u32 bbr_tso_segs_generic(struct sock *sk, unsigned int mss_now,\n"
+        "\t\t\t\tu32 gso_max_size)\n"
+        "{\n"
+        "\tu32 segs;\n"
+        "\tu64 bytes;\n"
+        "\n"
+        "\t/* Budget a TSO/GSO burst size allowance based on bw (pacing_rate). */\n"
+        "\tbytes = READ_ONCE(sk->sk_pacing_rate) >> READ_ONCE(sk->sk_pacing_shift);\n"
+        "\n"
+        "\tbytes = min_t(u32, bytes, gso_max_size - 1 - MAX_TCP_HEADER);\n"
+        "\tsegs = max_t(u32, bytes / mss_now, bbr_min_tso_segs(sk));\n"
+        "\treturn segs;\n"
+        "}\n"
+        "\n"
+        "/* Custom tcp_tso_autosize() for BBR, used at transmit time to cap skb size. */\n"
+        "static u32  bbr_tso_segs(struct sock *sk, unsigned int mss_now)\n"
+        "{\n"
+        "\treturn bbr_tso_segs_generic(sk, mss_now, sk->sk_gso_max_size);\n"
+        "}\n"
+        "\n"
+        "/* Like bbr_tso_segs(), using mss_cache, ignoring driver's sk_gso_max_size. */\n"
+    )
+    t = t[:min_fn.end()] + add + t[min_fn.end():]
+
+goal_pat = re.compile(r'static u32 bbr_tso_segs_goal\(struct sock \*sk\)\n\{[\s\S]*?\n\}', re.S)
+goal_repl = (
+    "static u32 bbr_tso_segs_goal(struct sock *sk)\n"
+    "{\n"
+    "\tstruct tcp_sock *tp = tcp_sk(sk);\n"
+    "\n"
+    "\treturn  bbr_tso_segs_generic(sk, tp->mss_cache, GSO_MAX_SIZE);\n"
+    "}"
+)
+t, goal_n = goal_pat.subn(goal_repl, t, count=1)
+if goal_n != 1:
+    raise SystemExit("failed to rewrite bbr_tso_segs_goal()")
+
+if ".tso_segs\t= bbr_tso_segs," not in t and ".tso_segs = bbr_tso_segs," not in t:
+    t_new = t.replace(".min_tso_segs\t= bbr_min_tso_segs,", ".tso_segs\t= bbr_tso_segs,", 1)
+    if t_new == t:
+        t_new = t.replace(".min_tso_segs = bbr_min_tso_segs,", ".tso_segs = bbr_tso_segs,", 1)
+    if t_new == t:
+        raise SystemExit("failed to switch tcp_bbr_cong_ops to tso_segs callback")
+    t = t_new
+
+tcp_bbr.write_text(t, encoding="utf-8", newline="\n")
+PY
+      git -C "${COMMON_DIR}" add -- include/net/tcp.h net/ipv4/bpf_tcp_ca.c net/ipv4/tcp_bbr.c net/ipv4/tcp_output.c || return 1
+      return 0
+      ;;
   esac
 
   return 1

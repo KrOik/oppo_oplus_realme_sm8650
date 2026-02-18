@@ -460,21 +460,40 @@ tcp_h.write_text(h, encoding="utf-8", newline="\n")
 
 b = bpf_tcp_ca.read_text(encoding="utf-8")
 if "static u32 bpf_tcp_ca_tso_segs(struct sock *sk, unsigned int mss_now)" not in b:
-    b_new = b.replace(
-        "static u32 bpf_tcp_ca_min_tso_segs(struct sock *sk)",
-        "static u32 bpf_tcp_ca_tso_segs(struct sock *sk, unsigned int mss_now)",
-        1,
+    b_new, n = re.subn(
+        r'static u32 bpf_tcp_ca_(?:min_tso_segs|tso_segs)\(struct sock \*sk\)',
+        'static u32 bpf_tcp_ca_tso_segs(struct sock *sk, unsigned int mss_now)',
+        b,
+        count=1,
     )
-    if b_new == b:
-        raise SystemExit("failed to rename bpf_tcp_ca tso callback")
-    b = b_new
+    if n == 0 and "bpf_tcp_ca_tso_segs(" not in b:
+        pkts_anchor = re.search(r'static void bpf_tcp_ca_pkts_acked\(.*?\n\}\n', b, flags=re.S)
+        if not pkts_anchor:
+            raise SystemExit("failed to find insertion point for bpf_tcp_ca_tso_segs()")
+        stub = (
+            "\nstatic u32 bpf_tcp_ca_tso_segs(struct sock *sk, unsigned int mss_now)\n"
+            "{\n"
+            "\treturn 0;\n"
+            "}\n"
+        )
+        b = b[:pkts_anchor.end()] + stub + b[pkts_anchor.end():]
+    elif n == 1:
+        b = b_new
 if ".tso_segs = bpf_tcp_ca_tso_segs," not in b:
-    b_new = b.replace(
-        ".min_tso_segs = bpf_tcp_ca_min_tso_segs,",
-        ".tso_segs = bpf_tcp_ca_tso_segs,",
-        1,
+    b_new, n = re.subn(
+        r'\.min_tso_segs\s*=\s*bpf_tcp_ca_(?:min_tso_segs|tso_segs),',
+        '.tso_segs = bpf_tcp_ca_tso_segs,',
+        b,
+        count=1,
     )
-    if b_new == b:
+    if n == 0:
+        b_new, n = re.subn(
+            r'(\.pkts_acked\s*=\s*bpf_tcp_ca_pkts_acked,\n)',
+            r'\1\t.tso_segs = bpf_tcp_ca_tso_segs,\n',
+            b,
+            count=1,
+        )
+    if n == 0:
         raise SystemExit("failed to update bpf tcp ca ops tso callback hook")
     b = b_new
 bpf_tcp_ca.write_text(b, encoding="utf-8", newline="\n")

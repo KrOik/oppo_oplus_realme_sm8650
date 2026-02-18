@@ -74,6 +74,11 @@ on:
         required: true
         type: boolean
         default: 'true'
+      schedutil_default:
+        description: '是否将 schedutil 设为默认CPU调频 governor(省电/平衡)'
+        required: true
+        type: boolean
+        default: 'true'
       disable_pm_debug:
         description: '是否禁用 PM_DEBUG/PM_ADVANCED_DEBUG(省电)'
         required: true
@@ -409,6 +414,8 @@ jobs:
           #添加对 Mountify (backslashxx/mountify) 模块的支持
           echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_LRU_GEN=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_LRU_GEN_ENABLED=y" >> ./common/arch/arm64/configs/gki_defconfig
           if [[ "${{ github.event.inputs.zram_writeback_enable }}" == "true" ]]; then
             # Enable zram writeback support in Image-only packaging
             echo "CONFIG_ZRAM=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -442,6 +449,10 @@ jobs:
           fi
           if [[ "${{ github.event.inputs.enable_wakelocks_gc }}" == "true" ]]; then
             echo "CONFIG_PM_WAKELOCKS_GC=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
+          if [[ "${{ github.event.inputs.schedutil_default }}" == "true" ]]; then
+            echo "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
           
       - name: 启用网络功能增强优化配置

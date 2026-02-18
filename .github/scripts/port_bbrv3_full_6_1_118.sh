@@ -936,8 +936,7 @@ if marker not in s:
     anchor = "#include <uapi/linux/bpf.h>\n"
     if anchor not in s:
         raise SystemExit("failed to find uapi/linux/bpf.h include in btf.h")
-    compat = (
-        marker
+    compat = marker + (
         "#ifndef __retain\n"
         "#define __retain\n"
         "#endif\n"

@@ -322,14 +322,8 @@ jobs:
             echo "已选择无内置KernelSU模式，跳过KernelSU配置..."
           fi
 
-      - name: SUSFS upstream 状态检查
-        if: inputs.susfs_enable
-        run: |
-          echo "::warning::susfs upstream currently unstable on 6.1.118, force disabling susfs for this run"
-          echo "SUSFS_FORCE_DISABLE=true" >> $GITHUB_ENV
-
       - name: 应用 KernelSU & SUSFS 补丁
-        if: inputs.susfs_enable && env.SUSFS_FORCE_DISABLE != 'true'
+        if: inputs.susfs_enable
         run: |
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} != "none" ]]; then
@@ -382,7 +376,7 @@ jobs:
           patch -p1 -F 3 < lz4kd.patch || true
           
       - name: 添加SUSFS 配置项
-        if: inputs.susfs_enable && env.SUSFS_FORCE_DISABLE != 'true'
+        if: inputs.susfs_enable
         run: |
           cd kernel_workspace
           echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -408,7 +402,7 @@ jobs:
           if [[ ${{ github.event.inputs.kpm_enable }} == 'builtin' && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "resukisu" ) ]]; then
             echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
-          if [[ "${{ github.event.inputs.susfs_enable }}" == "false" || "${SUSFS_FORCE_DISABLE}" == "true" ]]; then
+          if [[ "${{ github.event.inputs.susfs_enable }}" == "false" ]]; then
             echo "CONFIG_KSU_SUSFS=n" >> ./common/arch/arm64/configs/gki_defconfig
           fi
           #添加对 Mountify (backslashxx/mountify) 模块的支持

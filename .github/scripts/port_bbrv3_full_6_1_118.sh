@@ -39,8 +39,14 @@ fatal() {
 
 [[ -d "${COMMON_DIR}" ]] || fatal "missing kernel source tree: ${COMMON_DIR}"
 echo "[BBRv3] verifying fixed upstream anchor commit: ${BBRV3_COMMIT}"
-anchor_commit="$(git ls-remote https://github.com/google/bbr.git "${BBRV3_COMMIT}" | awk '{print $1}')"
-[[ "${anchor_commit}" == "${BBRV3_COMMIT}" ]] || fatal "unable to resolve fixed upstream anchor commit ${BBRV3_COMMIT}"
+v3_head_commit="$(git ls-remote https://github.com/google/bbr.git refs/heads/v3 | awk '{print $1}')"
+[[ -n "${v3_head_commit}" ]] || fatal "unable to resolve upstream ref refs/heads/v3"
+[[ "${v3_head_commit}" == "${BBRV3_COMMIT}" ]] || fatal "upstream refs/heads/v3 mismatch: expected ${BBRV3_COMMIT}, got ${v3_head_commit}"
+anchor_patch_file="$(mktemp)"
+curl -fsSL --retry 3 --retry-delay 2 "https://github.com/google/bbr/commit/${BBRV3_COMMIT}.patch" -o "${anchor_patch_file}"
+anchor_from="$(sed -n 's/^From \([0-9a-f]\{40\}\).*/\1/p' "${anchor_patch_file}" | head -n1)"
+rm -f "${anchor_patch_file}"
+[[ "${anchor_from}" == "${BBRV3_COMMIT}" ]] || fatal "fixed upstream anchor patch header mismatch: ${anchor_from:-unset}"
 
 prepare_common_repo_for_am() {
   local tracked_paths=(

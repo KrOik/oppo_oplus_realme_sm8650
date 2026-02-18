@@ -840,6 +840,12 @@ PY
       git -C "${COMMON_DIR}" add -- include/net/tcp.h include/uapi/linux/rtnetlink.h net/ipv4/tcp_minisocks.c net/ipv4/tcp_output.c || return 1
       return 0
       ;;
+    cb31f3d02b1d)
+      echo "[BBRv3] resolving known 3-way conflict for ${short_sha} by taking upstream sides for conflicted files"
+      git -C "${COMMON_DIR}" checkout --theirs -- include/net/inet_connection_sock.h net/ipv4/Kconfig net/ipv4/tcp_bbr.c || return 1
+      git -C "${COMMON_DIR}" add -- include/net/inet_connection_sock.h include/net/tcp.h include/uapi/linux/inet_diag.h net/ipv4/Kconfig net/ipv4/tcp_bbr.c || return 1
+      return 0
+      ;;
   esac
 
   return 1

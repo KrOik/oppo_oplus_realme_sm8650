@@ -538,7 +538,7 @@ tcp_output.write_text(o, encoding="utf-8", newline="\n")
 
 t = tcp_bbr.read_text(encoding="utf-8")
 if "static u32 bbr_tso_segs_generic(struct sock *sk, unsigned int mss_now," not in t:
-    min_fn = re.search(r'__bpf_kfunc static u32 bbr_min_tso_segs\(struct sock \*sk\)\n\{.*?\n\}\n', t, flags=re.S)
+    min_fn = re.search(r'(?:__bpf_kfunc\s+)?static u32 bbr_min_tso_segs\(struct sock \*sk\)\n\{.*?\n\}\n', t, flags=re.S)
     if not min_fn:
         raise SystemExit("failed to locate bbr_min_tso_segs() in tcp_bbr.c")
     add = (

@@ -996,6 +996,36 @@ if tcp_brutal.exists():
 PY
 }
 
+backport_inet_csk_container_macro() {
+  local icsk_h="${COMMON_DIR}/include/net/inet_connection_sock.h"
+  local container_of_h="${COMMON_DIR}/include/linux/container_of.h"
+
+  [[ -f "${icsk_h}" ]] || fatal "missing ${icsk_h}"
+  [[ -f "${container_of_h}" ]] || fatal "missing ${container_of_h}"
+
+  python3 - "${icsk_h}" "${container_of_h}" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+icsk_h = Path(sys.argv[1])
+container_of_h = Path(sys.argv[2])
+
+container_has_const = "container_of_const(" in container_of_h.read_text(encoding="utf-8")
+s = icsk_h.read_text(encoding="utf-8")
+
+if not container_has_const and "container_of_const(" in s:
+    pat = r'container_of_const\(\s*ptr\s*,\s*struct inet_connection_sock\s*,\s*icsk_inet\.sk\s*\)'
+    repl = "container_of(ptr, struct inet_connection_sock, icsk_inet.sk)"
+    s_new, n = re.subn(pat, repl, s, count=1)
+    if n != 1:
+        raise SystemExit("failed to backport inet_csk() container_of_const usage")
+    s = s_new
+
+icsk_h.write_text(s, encoding="utf-8", newline="\n")
+PY
+}
+
 backport_kfunc_macros() {
   local btf_h="${COMMON_DIR}/include/linux/btf.h"
   local btf_ids_h="${COMMON_DIR}/include/linux/btf_ids.h"
@@ -1095,6 +1125,9 @@ backport_kfunc_macros
 
 echo "[BBRv3] backporting cong_control API parity for 6.1"
 backport_cong_control_api
+
+echo "[BBRv3] backporting inet_csk() container macro parity for 6.1"
+backport_inet_csk_container_macro
 
 echo "[BBRv3] validating compat results"
 TCP_BBR="${COMMON_DIR}/net/ipv4/tcp_bbr.c"

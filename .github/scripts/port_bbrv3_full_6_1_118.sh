@@ -468,15 +468,19 @@ if "static u32 bpf_tcp_ca_tso_segs(struct sock *sk, unsigned int mss_now)" not i
     )
     if n == 0 and "bpf_tcp_ca_tso_segs(" not in b:
         pkts_anchor = re.search(r'static void bpf_tcp_ca_pkts_acked\(.*?\n\}\n', b, flags=re.S)
-        if not pkts_anchor:
-            raise SystemExit("failed to find insertion point for bpf_tcp_ca_tso_segs()")
+        if pkts_anchor:
+            insert_pos = pkts_anchor.end()
+        else:
+            insert_pos = b.find("struct bpf_struct_ops bpf_tcp_congestion_ops")
+            if insert_pos < 0:
+                raise SystemExit("failed to find insertion point for bpf_tcp_ca_tso_segs()")
         stub = (
             "\nstatic u32 bpf_tcp_ca_tso_segs(struct sock *sk, unsigned int mss_now)\n"
             "{\n"
             "\treturn 0;\n"
             "}\n"
         )
-        b = b[:pkts_anchor.end()] + stub + b[pkts_anchor.end():]
+        b = b[:insert_pos] + stub + b[insert_pos:]
     elif n == 1:
         b = b_new
 if ".tso_segs = bpf_tcp_ca_tso_segs," not in b:
@@ -490,6 +494,13 @@ if ".tso_segs = bpf_tcp_ca_tso_segs," not in b:
         b_new, n = re.subn(
             r'(\.pkts_acked\s*=\s*bpf_tcp_ca_pkts_acked,\n)',
             r'\1\t.tso_segs = bpf_tcp_ca_tso_segs,\n',
+            b,
+            count=1,
+        )
+    if n == 0:
+        b_new, n = re.subn(
+            r'(\.cong_control\s*=\s*bpf_tcp_ca_cong_control,\n)',
+            '\t.tso_segs = bpf_tcp_ca_tso_segs,\n\\1',
             b,
             count=1,
         )

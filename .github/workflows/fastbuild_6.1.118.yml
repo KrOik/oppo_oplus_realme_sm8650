@@ -53,7 +53,7 @@ on:
         description: '是否启用bbr算法(优化上行数据,对手机日用无太大意义甚至可能负优化;false关闭,true仅加入算法,default设为默认)'
         required: true
         type: choice
-        default: 'false'
+        default: 'default'
         options:
           - 'false'
           - 'true'
@@ -62,7 +62,7 @@ on:
         description: '是否自动尝试移植 BBRv3 (google/bbr)'
         required: true
         type: boolean
-        default: 'false'
+        default: 'true'
       bbrv3_tag:
         description: 'BBRv3 来源 tag/branch (默认 bbrv3-2025-03-18)'
         required: false
@@ -82,17 +82,17 @@ on:
         description: '是否禁用 PM_DEBUG/PM_ADVANCED_DEBUG(省电)'
         required: true
         type: boolean
-        default: 'false'
+        default: 'true'
       enable_wakelocks_gc:
         description: '是否启用 PM_WAKELOCKS_GC(减少无效 wakelock 累积)'
         required: true
         type: boolean
-        default: 'false'
+        default: 'true'
       better_net:
         description: '是否开启网络功能拓展配置(用于为ipset及需要iptables等高级网络功能内核支持的程序提供支持)'
         required: true
         type: boolean
-        default: 'false'
+        default: 'true'
       ssg_enable:
         description: '是否启用 Kyber 并设为默认IO调度器(替代SSG IO)'
         required: true
@@ -102,7 +102,7 @@ on:
         description: '是否启用Re-Kernel支持(与Freezer/NoActive等软件配合, 提升应用冻结能力)'
         required: true
         type: boolean
-        default: 'false'
+        default: 'true'
       baseband_guard:
         description: '是否开启内核级基带保护(阻止一切对非用户分区的写入，有效防止格机)'
         required: true
@@ -501,6 +501,256 @@ jobs:
               echo "::warning::缺少文件，跳过: $rel"
             fi
           done
+
+          HAS_NETNS_IPV4_PLB="false"
+          if [[ -f common/include/net/netns/ipv4.h ]] && grep -q "sysctl_tcp_plb_enabled" common/include/net/netns/ipv4.h; then
+            HAS_NETNS_IPV4_PLB="true"
+          fi
+
+          HAS_BTF_KFUNCS="false"
+          if grep -Rqs "BTF_KFUNCS_START" common/include; then
+            HAS_BTF_KFUNCS="true"
+          fi
+
+          HAS_BTF_SET8="false"
+          if grep -Rqs "BTF_SET8_START" common/include; then
+            HAS_BTF_SET8="true"
+          fi
+
+          HAS_MIN_TSO_SEGS="false"
+          if [[ -f common/include/net/tcp.h ]] && grep -q "min_tso_segs" common/include/net/tcp.h; then
+            HAS_MIN_TSO_SEGS="true"
+          fi
+
+          HAS_TSO_SEGS="false"
+          if [[ -f common/include/net/tcp.h ]] && grep -q "tso_segs" common/include/net/tcp.h; then
+            HAS_TSO_SEGS="true"
+          fi
+
+          HAS_SKB_MARKED_LOST="false"
+          if [[ -f common/include/net/tcp.h ]] && grep -q "skb_marked_lost" common/include/net/tcp.h; then
+            HAS_SKB_MARKED_LOST="true"
+          fi
+
+          HAS_TCP_CONG_WANTS_CE_EVENTS="false"
+          if grep -Rqs "TCP_CONG_WANTS_CE_EVENTS" common/include; then
+            HAS_TCP_CONG_WANTS_CE_EVENTS="true"
+          fi
+
+          CONG_CONTROL_RS_ONLY="false"
+          if [[ -f common/include/net/tcp.h ]] && grep -Eq "cong_control[[:space:]]*\\)[[:space:]]*\\([[:space:]]*struct sock \\*sk,[[:space:]]*const struct rate_sample \\*rs\\)" common/include/net/tcp.h; then
+            CONG_CONTROL_RS_ONLY="true"
+          fi
+
+          export HAS_NETNS_IPV4_PLB HAS_BTF_KFUNCS HAS_BTF_SET8 HAS_MIN_TSO_SEGS HAS_TSO_SEGS HAS_SKB_MARKED_LOST HAS_TCP_CONG_WANTS_CE_EVENTS CONG_CONTROL_RS_ONLY
+
+          if [[ -f common/include/net/tcp.h ]] && ! grep -q "CA_EVENT_TLP_RECOVERY" common/include/net/tcp.h; then
+            python - <<'PY'
+            from pathlib import Path
+            import re
+
+            p = Path("common/include/net/tcp.h")
+            s = p.read_text(encoding="utf-8")
+            if "CA_EVENT_TLP_RECOVERY" in s:
+              raise SystemExit(0)
+
+            m = re.search(r"enum\\s+tcp_ca_event\\s*\\{", s)
+            if not m:
+              raise SystemExit("enum tcp_ca_event not found")
+            start = m.end()
+            end = s.find("};", start)
+            if end == -1:
+              raise SystemExit("enum tcp_ca_event end not found")
+
+            body = s[start:end]
+            if "CA_EVENT_LOSS" in body:
+              body = body.replace("CA_EVENT_LOSS,", "CA_EVENT_LOSS,\\n\\tCA_EVENT_TLP_RECOVERY,")
+            else:
+              lines = body.splitlines()
+              ins_at = 0
+              for i, line in enumerate(lines):
+                if line.strip().startswith("CA_EVENT_"):
+                  ins_at = i + 1
+              lines.insert(ins_at, "\\tCA_EVENT_TLP_RECOVERY,")
+              body = "\\n".join(lines)
+
+            s = s[:start] + body + s[end:]
+            p.write_text(s, encoding="utf-8", newline="\\n")
+            PY
+          fi
+
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          p = Path("common/net/ipv4/tcp_bbr.c")
+          if not p.exists():
+            raise SystemExit("missing common/net/ipv4/tcp_bbr.c")
+          s = p.read_text(encoding="utf-8")
+
+          has_plb = os.environ.get("HAS_NETNS_IPV4_PLB", "false") == "true"
+          has_btf_kfuncs = os.environ.get("HAS_BTF_KFUNCS", "false") == "true"
+          has_btf_set8 = os.environ.get("HAS_BTF_SET8", "false") == "true"
+          has_min_tso_segs = os.environ.get("HAS_MIN_TSO_SEGS", "false") == "true"
+          has_tso_segs = os.environ.get("HAS_TSO_SEGS", "false") == "true"
+          has_skb_marked_lost = os.environ.get("HAS_SKB_MARKED_LOST", "false") == "true"
+          has_ce_events_flag = os.environ.get("HAS_TCP_CONG_WANTS_CE_EVENTS", "false") == "true"
+          cong_control_rs_only = os.environ.get("CONG_CONTROL_RS_ONLY", "false") == "true"
+
+          if "#define BBRV3_VENDOR_COMPAT 1" not in s:
+            s = s.replace(
+              '#include "tcp_dctcp.h"\\n',
+              '#include "tcp_dctcp.h"\\n'
+              '#define BBRV3_VENDOR_COMPAT 1\\n'
+              '#ifndef __bpf_kfunc\\n'
+              '#define __bpf_kfunc\\n'
+              '#endif\\n'
+              '#ifndef TCP_ECN_LOW\\n'
+              '#define TCP_ECN_LOW 0\\n'
+              '#endif\\n'
+              '#ifndef TCP_ECN_ECT_PERMANENT\\n'
+              '#define TCP_ECN_ECT_PERMANENT 0\\n'
+              '#endif\\n'
+              'static inline u32 bbr_rs_tx_in_flight(const struct rate_sample *rs) { return rs->prior_in_flight; }\\n'
+              'static inline s32 bbr_rs_lost(const struct rate_sample *rs) { return rs->losses; }\\n'
+              'static inline bool bbr_rs_is_ece(const struct rate_sample *rs) { return false; }\\n'
+              'static inline bool bbr_rs_is_acking_tlp_retrans_seq(const struct rate_sample *rs) { return false; }\\n'
+            )
+
+          s = s.replace("struct net *net = sock_net(sk);", "struct net *net __maybe_unused = sock_net(sk);")
+
+          if not has_plb:
+            s = s.replace("READ_ONCE(net->ipv4.sysctl_tcp_plb_enabled)", "0")
+            if "TCP_PLB_SCALE" not in s:
+              s = s.replace(
+                '#ifndef TCP_ECN_ECT_PERMANENT\\n#define TCP_ECN_ECT_PERMANENT 0\\n#endif\\n',
+                '#ifndef TCP_ECN_ECT_PERMANENT\\n#define TCP_ECN_ECT_PERMANENT 0\\n#endif\\n'
+                '#ifndef TCP_PLB_SCALE\\n'
+                '#define TCP_PLB_SCALE BBR_SCALE\\n'
+                'struct tcp_plb_state { u32 pause_until; };\\n'
+                'static inline void tcp_plb_update_state(struct sock *sk, struct tcp_plb_state *plb, int ce_ratio) { }\\n'
+                'static inline void tcp_plb_check_rehash(struct sock *sk, struct tcp_plb_state *plb) { }\\n'
+                'static inline void tcp_plb_update_state_upon_rto(struct sock *sk, struct tcp_plb_state *plb) { }\\n'
+                '#endif\\n'
+              )
+
+          s = s.replace("rs->tx_in_flight", "bbr_rs_tx_in_flight(rs)")
+          s = s.replace("rs->lost", "bbr_rs_lost(rs)")
+          s = s.replace("rs->is_ece", "bbr_rs_is_ece(rs)")
+          s = s.replace("rs->is_acking_tlp_retrans_seq", "bbr_rs_is_acking_tlp_retrans_seq(rs)")
+          s = s.replace("rs.tx_in_flight", "rs.prior_in_flight")
+          s = s.replace("rs.lost", "rs.losses")
+          s = s.replace("TCP_SKB_CB(skb)->tx.lost", "0")
+          s = s.replace("scb->tx.in_flight", "bbr->inflight_latest")
+          s = s.replace("scb->tx.lost", "0")
+          s = s.replace("tp->tlp_orig_data_app_limited", "0")
+          s = s.replace("tp->fast_ack_mode = bbr_fast_ack_mode ? 1 : 0;", "(void)bbr_fast_ack_mode;")
+
+          if "tcp_skb_tx_in_flight_is_suspicious(" in s:
+            if "static inline bool bbr_tcp_skb_tx_in_flight_is_suspicious(" not in s:
+              s = s.replace(
+                "static inline bool bbr_rs_is_acking_tlp_retrans_seq(const struct rate_sample *rs) { return false; }\\n",
+                "static inline bool bbr_rs_is_acking_tlp_retrans_seq(const struct rate_sample *rs) { return false; }\\n"
+                "static inline bool bbr_tcp_skb_tx_in_flight_is_suspicious(u32 skb_pcount, u8 skb_sacked_flags, u32 tx_in_flight) { return false; }\\n",
+                1,
+              )
+            s = s.replace("tcp_skb_tx_in_flight_is_suspicious(", "bbr_tcp_skb_tx_in_flight_is_suspicious(")
+
+          if not has_ce_events_flag:
+            s = s.replace("| TCP_CONG_WANTS_CE_EVENTS", "")
+
+          if has_min_tso_segs and not has_tso_segs:
+            s = s.replace(".tso_segs\\t\\t= bbr_tso_segs,", ".min_tso_segs\\t= bbr_min_tso_segs_compat,")
+            s = s.replace(".tso_segs\\t= bbr_tso_segs,", ".min_tso_segs\\t= bbr_min_tso_segs_compat,")
+            s = s.replace(".tso_segs = bbr_tso_segs,", ".min_tso_segs = bbr_min_tso_segs_compat,")
+            if "bbr_min_tso_segs_compat" not in s:
+              needle = "static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {"
+              if needle in s:
+                s = s.replace(
+                  needle,
+                  "static u32 bbr_min_tso_segs_compat(struct sock *sk)\\n{\\n\\treturn bbr_tso_segs(sk, 0);\\n}\\n\\n" + needle,
+                  1,
+                )
+
+          if not has_skb_marked_lost:
+            s = "\\n".join(line for line in s.splitlines() if ".skb_marked_lost" not in line) + "\\n"
+
+          if not has_btf_kfuncs:
+            if has_btf_set8:
+              s = s.replace("BTF_KFUNCS_START(", "BTF_SET8_START(").replace("BTF_KFUNCS_END(", "BTF_SET8_END(")
+            else:
+              s = re.sub(r"^BTF_KFUNCS_START\\([\\s\\S]*?^BTF_KFUNCS_END\\(.*?\\)\\s*$", "", s, flags=re.MULTILINE)
+
+          if cong_control_rs_only:
+            s = s.replace(".cong_control\\t= bbr_main,", ".cong_control\\t= bbr_main_compat,")
+            s = s.replace(".cong_control = bbr_main,", ".cong_control\\t= bbr_main_compat,")
+            if "static void bbr_main_compat(" not in s:
+              needle = "static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {"
+              if needle in s:
+                s = s.replace(
+                  needle,
+                  "static void bbr_main_compat(struct sock *sk, const struct rate_sample *rs)\\n{\\n\\tbbr_main(sk, 0, 0, rs);\\n}\\n\\n" + needle,
+                  1,
+                )
+
+          p.write_text(s, encoding="utf-8", newline="\\n")
+          PY
+
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path("common/net/ipv4/tcp_bbr.c")
+          s = p.read_text(encoding="utf-8")
+          marker = 'pr_info("tcp_bbr: BBRv3 patched (compat)\\n");'
+          if marker not in s:
+            line = "\treturn tcp_register_congestion_control(&tcp_bbr_cong_ops);"
+            if line in s:
+              s = s.replace(line, "\t" + marker + "\n" + line, 1)
+            elif "return tcp_register_congestion_control(&tcp_bbr_cong_ops);" in s:
+              s = s.replace(
+                "return tcp_register_congestion_control(&tcp_bbr_cong_ops);",
+                marker + "\n\treturn tcp_register_congestion_control(&tcp_bbr_cong_ops);",
+                1,
+              )
+            else:
+              raise SystemExit("BBRv3 marker inject failed: register call not found")
+          p.write_text(s, encoding="utf-8", newline="\\n")
+          PY
+
+          if [[ -f common/include/net/inet_connection_sock.h ]]; then
+            sed -ri "s/(icsk_ca_priv\\[)104([[:space:]]*\\/[[:space:]]*sizeof\\(u64\\)\\];)/\\1160\\2/" common/include/net/inet_connection_sock.h
+          fi
+
+          if [[ "${HAS_NETNS_IPV4_PLB}" != "true" ]] && grep -q "sysctl_tcp_plb_enabled" common/net/ipv4/tcp_bbr.c; then
+            echo "::error::BBRv3 patch failed: sysctl_tcp_plb_enabled still present"
+            exit 1
+          fi
+
+          if grep -Eq "#define[[:space:]]+CA_EVENT_TLP_RECOVERY" common/net/ipv4/tcp_bbr.c; then
+            echo "::error::BBRv3 patch failed: CA_EVENT_TLP_RECOVERY macro should not be defined"
+            exit 1
+          fi
+
+          if grep -Eq "rs->tx_in_flight|rs->lost|rs->is_ece|rs->is_acking_tlp_retrans_seq|scb->tx.in_flight|scb->tx.lost|TCP_SKB_CB\\(skb\\)->tx.lost|tp->fast_ack_mode|tp->tlp_orig_data_app_limited|BTF_KFUNCS_START|BTF_KFUNCS_END|bbr_bbr_tcp_skb_tx_in_flight_is_suspicious" common/net/ipv4/tcp_bbr.c; then
+            echo "::error::BBRv3 patch failed: unresolved 6.1 incompat symbols still present"
+            exit 1
+          fi
+
+          if grep -Eq "inflight_hi|bw_hi|loss_in_round|bw_probe_up_rounds" common/net/ipv4/tcp_bbr.c; then
+            echo "BBRV3_PATCHED=true" >> $GITHUB_ENV
+            echo "BBRv3 特征符号检测通过"
+          else
+            echo "::error::未检测到 BBRv3 特征符号，终止构建"
+            exit 1
+          fi
+
+          if ! grep -q "BBRv3 patched (compat)" common/net/ipv4/tcp_bbr.c; then
+            echo "::error::BBRv3 marker inject failed"
+            exit 1
+          fi
+
+          exit 0
 
           # 6.1.118 compat: trim hard deps from BBRv3 (PLB/BPF kfunc/TLP symbols)
           if [[ ! -f common/net/ipv4/tcp_bbr.c ]]; then

@@ -68,11 +68,13 @@ prepare_common_repo_for_am() {
     "net/ipv4/sysctl_net_ipv4.c"
     "net/ipv4/tcp.c"
     "net/ipv4/tcp_bbr.c"
+    "net/ipv4/tcp_cong.c"
     "net/ipv4/tcp_dctcp.c"
     "net/ipv4/tcp_input.c"
     "net/ipv4/tcp_ipv4.c"
     "net/ipv4/tcp_minisocks.c"
     "net/ipv4/tcp_output.c"
+    "net/ipv4/tcp_plb.c"
     "net/ipv4/tcp_rate.c"
   )
   if [[ ! -d "${COMMON_DIR}/.git" ]]; then

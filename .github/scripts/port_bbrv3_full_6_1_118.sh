@@ -854,25 +854,20 @@ icsk_h = root / "include/net/inet_connection_sock.h"
 
 s = icsk_h.read_text(encoding="utf-8")
 
-s, n = re.subn(
-    r'#define\s+ICSK_CA_PRIV_SIZE[^\n]*',
-    '#define ICSK_CA_PRIV_SIZE      (144)',
-    s,
-    count=1,
-)
-if n != 1:
-    raise SystemExit("failed to locate ICSK_CA_PRIV_SIZE define in include/net/inet_connection_sock.h")
+lines = s.splitlines()
+define_idx = next((i for i, ln in enumerate(lines) if re.match(r'\s*#define\s+ICSK_CA_PRIV_SIZE\b', ln)), None)
+array_idx = next((i for i, ln in enumerate(lines) if re.search(r'\bicsk_ca_priv\[[^\]]+\];', ln)), None)
+if define_idx is None or array_idx is None:
+    raise SystemExit("failed to locate ICSK_CA_PRIV_SIZE/icsk_ca_priv lines in include/net/inet_connection_sock.h")
 
-s, n = re.subn(
-    r'u64\s+[^\n]*icsk_ca_priv\[[^\]]+\];',
-    '\tu64\t\t\t  icsk_ca_priv[ICSK_CA_PRIV_SIZE / sizeof(u64)];',
-    s,
-    count=1,
-)
-if n != 1:
-    raise SystemExit("failed to locate icsk_ca_priv array in include/net/inet_connection_sock.h")
+for idx in sorted((define_idx, array_idx), reverse=True):
+    lines.pop(idx)
 
-icsk_h.write_text(s, encoding="utf-8", newline="\n")
+insert_at = min(define_idx, array_idx)
+lines.insert(insert_at, "#define ICSK_CA_PRIV_SIZE      (144)")
+lines.insert(insert_at + 1, "\tu64\t\t\t  icsk_ca_priv[ICSK_CA_PRIV_SIZE / sizeof(u64)];")
+
+icsk_h.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 PY
       git -C "${COMMON_DIR}" add -- include/net/inet_connection_sock.h include/net/tcp.h include/uapi/linux/inet_diag.h net/ipv4/Kconfig net/ipv4/tcp_bbr.c || return 1
       return 0

@@ -661,6 +661,60 @@ PY
       git -C "${COMMON_DIR}" add -- include/linux/tcp.h net/ipv4/tcp.c net/ipv4/tcp_cong.c net/ipv4/tcp_input.c || return 1
       return 0
       ;;
+    a631934cbcd8)
+      echo "[BBRv3] resolving known 3-way conflict for ${short_sha} with upstream-equivalent edits"
+      git -C "${COMMON_DIR}" checkout --ours -- include/linux/tcp.h net/ipv4/tcp_output.c || return 1
+      python3 - "${COMMON_DIR}" <<'PY' || return 1
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+linux_tcp = root / "include/linux/tcp.h"
+tcp_output = root / "net/ipv4/tcp_output.c"
+
+s = linux_tcp.read_text(encoding="utf-8")
+if "tlp_orig_data_app_limited" not in s:
+    s_new, n = re.subn(
+        r'(fast_ack_mode\s*:\s*1,\s*/\* ack ASAP if >1 rcv_mss received\? \*/\n\s*)unused\s*:\s*4;',
+        r'\1tlp_orig_data_app_limited:1,\t/* app-limited before TLP rtx? */\n\t\tunused:3;',
+        s,
+        count=1,
+    )
+    if n == 0:
+        s_new, n = re.subn(
+            r'(dup_ack_counter\s*:\s*2,\n\s*tlp_retrans\s*:\s*1,\s*/\* TLP is a retransmission \*/\n\s*)unused\s*:\s*5;',
+            r'\1tlp_orig_data_app_limited:1,\t/* app-limited before TLP rtx? */\n\t\tunused:4;',
+            s,
+            count=1,
+        )
+    if n == 0:
+        s_new, n = re.subn(
+            r'(rate_app_limited\s*:\s*1,\s*/\*[^\\n]*\*/\n)',
+            r'\1\t\ttlp_orig_data_app_limited:1,\t/* app-limited before TLP rtx? */\n',
+            s,
+            count=1,
+        )
+    if n != 1:
+        raise SystemExit("failed to add tlp_orig_data_app_limited in include/linux/tcp.h")
+    s = s_new
+linux_tcp.write_text(s, encoding="utf-8", newline="\n")
+
+o = tcp_output.read_text(encoding="utf-8")
+if "tp->tlp_orig_data_app_limited = TCP_SKB_CB(skb)->tx.is_app_limited;" not in o:
+    anchor = "\tif (WARN_ON(!skb || !tcp_skb_pcount(skb)))\n\t\tgoto rearm_timer;\n\n"
+    if anchor not in o:
+        raise SystemExit("failed to locate tcp_send_loss_probe() warning guard in net/ipv4/tcp_output.c")
+    o = o.replace(
+        anchor,
+        anchor + "\ttp->tlp_orig_data_app_limited = TCP_SKB_CB(skb)->tx.is_app_limited;\n",
+        1,
+    )
+tcp_output.write_text(o, encoding="utf-8", newline="\n")
+PY
+      git -C "${COMMON_DIR}" add -- include/linux/tcp.h net/ipv4/tcp_output.c || return 1
+      return 0
+      ;;
   esac
 
   return 1

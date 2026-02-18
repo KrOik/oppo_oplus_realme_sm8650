@@ -570,6 +570,22 @@ jobs:
         run: |
           bash .github/scripts/port_bbrv3_full_6_1_118.sh
 
+      - name: BBRv3 upstream full-port gate
+        if: inputs.bbrv3_auto && inputs.bbr_enable != 'false'
+        run: |
+          if [[ "${BBRV3_PATCHED:-}" != "true" ]]; then
+            echo "::error::BBRv3 full-port gate failed: BBRV3_PATCHED is not true"
+            exit 1
+          fi
+          if [[ "${BBRV3_PATCH_MODE:-}" != "upstream_full" ]]; then
+            echo "::error::BBRv3 full-port gate failed: BBRV3_PATCH_MODE must be upstream_full, got '${BBRV3_PATCH_MODE:-unset}'"
+            exit 1
+          fi
+          if [[ "${BBRV3_SOURCE_COMMIT:-}" != "${{ env.BBRV3_COMMIT }}" ]]; then
+            echo "::error::BBRv3 full-port gate failed: BBRV3_SOURCE_COMMIT mismatch (expected ${{ env.BBRV3_COMMIT }}, got ${BBRV3_SOURCE_COMMIT:-unset})"
+            exit 1
+          fi
+
       - name: 添加 BBR 等一系列拥塞控制算法
         run: |
           if [[ "${{ github.event.inputs.bbr_enable }}" != "false" ]]; then
@@ -665,8 +681,13 @@ jobs:
           export PATH="$WORKDIR/kernel_workspace/clang20/bin:$PATH"
           export PATH="$WORKDIR/kernel_workspace/build-tools/bin:$PATH"
           cd kernel_workspace/common
+          test -f net/ipv4/tcp_plb.c
+          grep -q 'TCP_CONG_WANTS_CE_EVENTS' net/ipv4/tcp_bbr.c
+          grep -q 'BTF_KFUNCS_START(tcp_bbr_check_kfunc_ids)' net/ipv4/tcp_bbr.c
+          grep -q 'is_acking_tlp_retrans_seq' include/net/tcp.h
+          grep -q 'tlp_orig_data_app_limited' include/linux/tcp.h
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error net/ipv4/tcp_bbr.o
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error net/ipv4/tcp_bbr.o net/ipv4/tcp_input.o net/ipv4/tcp_output.o net/ipv4/tcp_rate.o net/ipv4/tcp_plb.o net/ipv4/tcp_dctcp.o
           echo "BBRv3 quick compile check passed"
 
       - name: 构建内核
@@ -693,10 +714,29 @@ jobs:
           export CCACHE_MAXSIZE="3G"
           echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "$CCACHE_DIR/ccache.conf"
           BBRV3_BUILD_LOG="${{ github.workspace }}/kernel_workspace/bbrv3_build.log"
+          validate_bbrv3_source_markers() {
+            if [[ "${{ github.event.inputs.bbrv3_auto }}" != "true" || "${{ github.event.inputs.bbr_enable }}" == "false" ]]; then
+              return 0
+            fi
+            grep -q 'TCP_CONG_WANTS_CE_EVENTS' net/ipv4/tcp_bbr.c
+            grep -q '\.skb_marked_lost' net/ipv4/tcp_bbr.c
+            grep -q '\.tso_segs' net/ipv4/tcp_bbr.c
+            grep -q 'READ_ONCE(net->ipv4.sysctl_tcp_plb_enabled)' net/ipv4/tcp_bbr.c
+            grep -q 'BTF_KFUNCS_START(tcp_bbr_check_kfunc_ids)' net/ipv4/tcp_bbr.c
+            grep -q 'tx_in_flight' include/net/tcp.h
+            grep -q 'is_acking_tlp_retrans_seq' include/net/tcp.h
+            grep -q 'is_ece' include/net/tcp.h
+            grep -q 'tlp_orig_data_app_limited' include/linux/tcp.h
+            grep -q 'RTAX_FEATURE_ECN_LOW' include/uapi/linux/rtnetlink.h
+            grep -q 'TCPI_OPT_ECN_LOW' include/uapi/linux/tcp.h
+            grep -q 'tcp_plb.o' net/ipv4/Makefile
+            test -f net/ipv4/tcp_plb.c
+          }
 
           if [[ "${{ github.event.inputs.fast_test_only }}" == "true" ]]; then
             echo "快速测试模式：仅执行内核编译，跳过打包发布相关流程"
             cd kernel_workspace/common
+            validate_bbrv3_source_markers
             make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig
             make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image 2>&1 | tee "$BBRV3_BUILD_LOG"
             if grep -Eq "resolve_btfids: unresolved symbol bbr_" "$BBRV3_BUILD_LOG"; then
@@ -707,6 +747,7 @@ jobs:
           fi
           
           cd kernel_workspace/common
+          validate_bbrv3_source_markers
           wget https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/lib/libfakestat.so
           wget https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/lib/libfaketimeMT.so
           chmod 777 ./*.so

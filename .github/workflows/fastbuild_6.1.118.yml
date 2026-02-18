@@ -399,6 +399,11 @@ jobs:
         run: |
           cd kernel_workspace
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
+          # 启用 PStore/Ramoops 调试支持(用于捕获内核崩溃/启动失败日志)
+          echo "CONFIG_PSTORE=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_PSTORE_CONSOLE=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_PSTORE_RAMOOPS=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_PSTORE_PMSG=y" >> ./common/arch/arm64/configs/gki_defconfig
           if [[ ${{ github.event.inputs.kpm_enable }} == 'builtin' && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "resukisu" ) ]]; then
             echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi

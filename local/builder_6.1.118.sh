@@ -268,6 +268,12 @@ DEFCONFIG_FILE=./common/arch/arm64/configs/gki_defconfig
 
 # 写入通用 SUSFS/KSU 配置
 echo "CONFIG_KSU=y" >> "$DEFCONFIG_FILE"
+
+# 启用 PStore/Ramoops 调试支持(用于捕获内核崩溃/启动失败日志)
+echo "CONFIG_PSTORE=y" >> "$DEFCONFIG_FILE"
+echo "CONFIG_PSTORE_CONSOLE=y" >> "$DEFCONFIG_FILE"
+echo "CONFIG_PSTORE_RAMOOPS=y" >> "$DEFCONFIG_FILE"
+echo "CONFIG_PSTORE_PMSG=y" >> "$DEFCONFIG_FILE"
 if [[ "$APPLY_SUSFS" == [yY] ]]; then
   echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG_FILE"
   echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> "$DEFCONFIG_FILE"

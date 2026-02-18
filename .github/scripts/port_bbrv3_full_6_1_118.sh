@@ -1094,9 +1094,36 @@ if marker not in s:
         "#endif\n\n"
     )
     s = s.replace(anchor, anchor + "\n" + compat, 1)
-s = re.sub(r'^\s*#define\s+__bpf_kfunc[^\n]*$',
-           '#define __bpf_kfunc __used __retain noinline',
-           s, count=1, flags=re.MULTILINE)
+s = re.sub(
+    r'^\s*#define\s+__bpf_kfunc[^\n]*$',
+    '#define __bpf_kfunc __used __retain noinline',
+    s,
+    flags=re.MULTILINE,
+)
+s = re.sub(
+    r'^\s*#define\s+__bpf_kfunc_start_defs[^\n]*$',
+    '#define __bpf_kfunc_start_defs()',
+    s,
+    flags=re.MULTILINE,
+)
+s = re.sub(
+    r'^\s*#define\s+__bpf_kfunc_end_defs[^\n]*$',
+    '#define __bpf_kfunc_end_defs()',
+    s,
+    flags=re.MULTILINE,
+)
+s = re.sub(
+    r'^\s*#define\s+__bpf_hook_start[^\n]*$',
+    '#define __bpf_hook_start() __bpf_kfunc_start_defs()',
+    s,
+    flags=re.MULTILINE,
+)
+s = re.sub(
+    r'^\s*#define\s+__bpf_hook_end[^\n]*$',
+    '#define __bpf_hook_end() __bpf_kfunc_end_defs()',
+    s,
+    flags=re.MULTILINE,
+)
 btf_h.write_text(s, encoding='utf-8', newline='\n')
 
 t = btf_ids_h.read_text(encoding='utf-8')

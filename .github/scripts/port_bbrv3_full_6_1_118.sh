@@ -187,8 +187,8 @@ resolve_known_commit_conflict() {
   case "${short_sha}" in
     a627517bdfe0)
       echo "[BBRv3] resolving known 3-way conflict for ${short_sha} with upstream-equivalent edits"
-      git -C "${COMMON_DIR}" checkout --ours -- include/net/tcp.h net/ipv4/tcp_rate.c
-      python3 - "${COMMON_DIR}" <<'PY'
+      git -C "${COMMON_DIR}" checkout --ours -- include/net/tcp.h net/ipv4/tcp_rate.c || return 1
+      python3 - "${COMMON_DIR}" <<'PY' || return 1
 from pathlib import Path
 import re
 import sys
@@ -205,8 +205,7 @@ if "static inline u32 tcp_stamp32_us_delta(u32 t1, u32 t0)" not in s:
         "\treturn max_t(s64, t1 - t0, 0);\n"
         "}\n"
     )
-    insert = (
-        anchor
+    insert = anchor + (
         "\n"
         "static inline u32 tcp_stamp32_us_delta(u32 t1, u32 t0)\n"
         "{\n"
@@ -217,14 +216,16 @@ if "static inline u32 tcp_stamp32_us_delta(u32 t1, u32 t0)" not in s:
         raise SystemExit("failed to locate tcp_stamp_us_delta() anchor in include/net/tcp.h")
     s = s.replace(anchor, insert, 1)
 
-s_new = re.sub(r'(\s)u64(\s+first_tx_mstamp;)', r'\1u32\2', s, count=1)
-if s_new == s:
-    raise SystemExit("failed to rewrite first_tx_mstamp type in include/net/tcp.h")
-s = s_new
-s_new = re.sub(r'(\s)u64(\s+delivered_mstamp;)', r'\1u32\2', s, count=1)
-if s_new == s:
-    raise SystemExit("failed to rewrite delivered_mstamp type in include/net/tcp.h")
-s = s_new
+if "u32 first_tx_mstamp;" not in s:
+    s_new = re.sub(r'(\s)u64(\s+first_tx_mstamp;)', r'\1u32\2', s, count=1)
+    if s_new == s:
+        raise SystemExit("failed to rewrite first_tx_mstamp type in include/net/tcp.h")
+    s = s_new
+if "u32 delivered_mstamp;" not in s:
+    s_new = re.sub(r'(\s)u64(\s+delivered_mstamp;)', r'\1u32\2', s, count=1)
+    if s_new == s:
+        raise SystemExit("failed to rewrite delivered_mstamp type in include/net/tcp.h")
+    s = s_new
 tcp_h.write_text(s, encoding="utf-8", newline="\n")
 
 t = tcp_rate.read_text(encoding="utf-8")
@@ -240,7 +241,109 @@ if "tcp_stamp32_us_delta(tp->tcp_mstamp," not in t:
     t = t_new
 tcp_rate.write_text(t, encoding="utf-8", newline="\n")
 PY
-      git -C "${COMMON_DIR}" add -- include/net/tcp.h net/ipv4/tcp_rate.c
+      git -C "${COMMON_DIR}" add -- include/net/tcp.h net/ipv4/tcp_rate.c || return 1
+      return 0
+      ;;
+    0e6b4413cb4a)
+      echo "[BBRv3] resolving known 3-way conflict for ${short_sha} with upstream-equivalent edits"
+      git -C "${COMMON_DIR}" checkout --ours -- include/net/tcp.h net/ipv4/tcp_output.c net/ipv4/tcp_rate.c || return 1
+      python3 - "${COMMON_DIR}" <<'PY' || return 1
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+tcp_h = root / "include/net/tcp.h"
+tcp_output = root / "net/ipv4/tcp_output.c"
+tcp_rate = root / "net/ipv4/tcp_rate.c"
+
+def insert_after_line(text: str, needle: str, addition: str) -> str:
+    idx = text.find(needle)
+    if idx < 0:
+        raise SystemExit(f"failed to locate line anchor: {needle}")
+    end = text.find("\n", idx)
+    if end < 0:
+        raise SystemExit(f"failed to locate newline for anchor: {needle}")
+    end += 1
+    return text[:end] + addition + text[end:]
+
+s = tcp_h.read_text(encoding="utf-8")
+if "#define TCPCB_IN_FLIGHT_BITS 20" not in s:
+    anchor = "\t\t\tu32 delivered_mstamp;\n"
+    addition = (
+        "#define TCPCB_IN_FLIGHT_BITS 20\n"
+        "#define TCPCB_IN_FLIGHT_MAX ((1U << TCPCB_IN_FLIGHT_BITS) - 1)\n"
+        "\t\t\tu32 in_flight:20,   /* packets in flight at transmit */\n"
+        "\t\t\t    unused2:12;\n"
+    )
+    s = insert_after_line(s, anchor, addition)
+
+if "u32 tx_in_flight;" not in s:
+    anchor = "\tu32  prior_delivered_ce;/* tp->delivered_ce at \"prior_mstamp\" */\n"
+    addition = "\tu32 tx_in_flight;\t/* packets in flight at starting timestamp */\n"
+    s = insert_after_line(s, anchor, addition)
+
+if "void tcp_set_tx_in_flight(struct sock *sk, struct sk_buff *skb);" not in s:
+    anchor = "void tcp_rate_skb_sent(struct sock *sk, struct sk_buff *skb);\n"
+    s = s.replace(anchor, "void tcp_set_tx_in_flight(struct sock *sk, struct sk_buff *skb);\n" + anchor, 1)
+
+tcp_h.write_text(s, encoding="utf-8", newline="\n")
+
+o = tcp_output.read_text(encoding="utf-8")
+if "tcp_set_tx_in_flight(sk, skb);" not in o:
+    anchor = "\t\t\ttcp_init_tso_segs(skb, mss_now);\n"
+    o = insert_after_line(o, anchor, "\t\t\ttcp_set_tx_in_flight(sk, skb);\n")
+tcp_output.write_text(o, encoding="utf-8", newline="\n")
+
+r = tcp_rate.read_text(encoding="utf-8")
+if "void tcp_set_tx_in_flight(struct sock *sk, struct sk_buff *skb)" not in r:
+    anchor = "/* Snapshot the current delivery information in the skb, to generate\n"
+    helper = (
+        "void tcp_set_tx_in_flight(struct sock *sk, struct sk_buff *skb)\n"
+        "{\n"
+        "\tstruct tcp_sock *tp = tcp_sk(sk);\n"
+        "\tu32 in_flight;\n"
+        "\n"
+        "\t/* Check, sanitize, and record packets in flight after skb was sent. */\n"
+        "\tin_flight = tcp_packets_in_flight(tp) + tcp_skb_pcount(skb);\n"
+        "\tif (WARN_ONCE(in_flight > TCPCB_IN_FLIGHT_MAX,\n"
+        "\t\t      \"insane in_flight %u cc %s mss %u \"\n"
+        "\t\t      \"cwnd %u pif %u %u %u %u\\n\",\n"
+        "\t\t      in_flight, inet_csk(sk)->icsk_ca_ops->name,\n"
+        "\t\t      tp->mss_cache, tp->snd_cwnd,\n"
+        "\t\t      tp->packets_out, tp->retrans_out,\n"
+        "\t\t      tp->sacked_out, tp->lost_out))\n"
+        "\t\tin_flight = TCPCB_IN_FLIGHT_MAX;\n"
+        "\tTCP_SKB_CB(skb)->tx.in_flight = in_flight;\n"
+        "}\n"
+        "\n"
+    )
+    r = r.replace(anchor, helper + anchor, 1)
+
+if "tcp_set_tx_in_flight(sk, skb);" not in r:
+    anchor = "TCP_SKB_CB(skb)->tx.is_app_limited"
+    idx = r.find(anchor)
+    if idx < 0:
+        raise SystemExit("failed to locate is_app_limited assignment in net/ipv4/tcp_rate.c")
+    end = r.find("\n", idx)
+    if end < 0:
+        raise SystemExit("failed to locate line ending for is_app_limited assignment")
+    end += 1
+    r = r[:end] + "\ttcp_set_tx_in_flight(sk, skb);\n" + r[end:]
+
+if "rs->tx_in_flight" not in r:
+    anchor = "rs->is_retrans"
+    idx = r.find(anchor)
+    if idx < 0:
+        raise SystemExit("failed to locate rs->is_retrans assignment in net/ipv4/tcp_rate.c")
+    end = r.find("\n", idx)
+    if end < 0:
+        raise SystemExit("failed to locate line ending for rs->is_retrans assignment")
+    end += 1
+    r = r[:end] + "\t\trs->tx_in_flight     = scb->tx.in_flight;\n" + r[end:]
+
+tcp_rate.write_text(r, encoding="utf-8", newline="\n")
+PY
+      git -C "${COMMON_DIR}" add -- include/net/tcp.h net/ipv4/tcp_output.c net/ipv4/tcp_rate.c || return 1
       return 0
       ;;
   esac

@@ -356,6 +356,82 @@ PY
       git -C "${COMMON_DIR}" add -- include/net/tcp.h net/ipv4/tcp_output.c net/ipv4/tcp_rate.c || return 1
       return 0
       ;;
+    5093de531d14)
+      echo "[BBRv3] resolving known 3-way conflict for ${short_sha} with upstream-equivalent edits"
+      git -C "${COMMON_DIR}" checkout --ours -- include/net/tcp.h net/ipv4/tcp_output.c || return 1
+      python3 - "${COMMON_DIR}" <<'PY' || return 1
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+tcp_h = root / "include/net/tcp.h"
+tcp_output = root / "net/ipv4/tcp_output.c"
+
+s = tcp_h.read_text(encoding="utf-8")
+if "tcp_skb_tx_in_flight_is_suspicious" not in s:
+    fn = re.search(r'static inline bool tcp_skb_sent_after\(.*?\n\}\n', s, flags=re.S)
+    if not fn:
+        raise SystemExit("failed to locate tcp_skb_sent_after() in include/net/tcp.h")
+    helper = (
+        "\n"
+        "/* If a retransmit failed due to local qdisc congestion or other local issues,\n"
+        " * then we may have called tcp_set_skb_tso_segs() to increase the number of\n"
+        " * segments in the skb without increasing the tx.in_flight. In all other cases,\n"
+        " * the tx.in_flight should be at least as big as the pcount of the sk_buff.  We\n"
+        " * do not have the state to know whether a retransmit failed due to local qdisc\n"
+        " * congestion or other local issues, so to avoid spurious warnings we consider\n"
+        " * that any skb marked lost may have suffered that fate.\n"
+        " */\n"
+        "static inline bool tcp_skb_tx_in_flight_is_suspicious(u32 skb_pcount,\n"
+        "\t\t\t\t\t      u32 skb_sacked_flags,\n"
+        "\t\t\t\t\t      u32 tx_in_flight)\n"
+        "{\n"
+        "\treturn (skb_pcount > tx_in_flight) && !(skb_sacked_flags & TCPCB_LOST);\n"
+        "}\n"
+    )
+    s = s[:fn.end()] + helper + s[fn.end():]
+tcp_h.write_text(s, encoding="utf-8", newline="\n")
+
+o = tcp_output.read_text(encoding="utf-8")
+if "int nsize, old_factor, inflight_prev;" not in o:
+    o = o.replace("int nsize, old_factor;", "int nsize, old_factor, inflight_prev;", 1)
+if "TCP_SKB_CB(buff)->tx.in_flight = inflight_prev +" not in o:
+    anchor = "\t\tif (diff)\n\t\t\ttcp_adjust_pcount(sk, skb, diff);\n"
+    block = (
+        "\n"
+        "\t\tinflight_prev = TCP_SKB_CB(skb)->tx.in_flight - old_factor;\n"
+        "\t\tif (inflight_prev < 0) {\n"
+        "\t\t\tWARN_ONCE(tcp_skb_tx_in_flight_is_suspicious(\n"
+        "\t\t\t\t\t  old_factor,\n"
+        "\t\t\t\t\t  TCP_SKB_CB(skb)->sacked,\n"
+        "\t\t\t\t\t  TCP_SKB_CB(skb)->tx.in_flight),\n"
+        "\t\t\t\t  \"inconsistent: tx.in_flight: %u \"\n"
+        "\t\t\t\t  \"old_factor: %d mss: %u sacked: %u \"\n"
+        "\t\t\t\t  \"1st pcount: %d 2nd pcount: %d \"\n"
+        "\t\t\t\t  \"1st len: %u 2nd len: %u \",\n"
+        "\t\t\t\t  TCP_SKB_CB(skb)->tx.in_flight, old_factor,\n"
+        "\t\t\t\t  mss_now, TCP_SKB_CB(skb)->sacked,\n"
+        "\t\t\t\t  tcp_skb_pcount(skb), tcp_skb_pcount(buff),\n"
+        "\t\t\t\t  skb->len, buff->len);\n"
+        "\t\t\tinflight_prev = 0;\n"
+        "\t\t}\n"
+        "\t\t/* Set 1st tx.in_flight as if 1st were sent by itself: */\n"
+        "\t\tTCP_SKB_CB(skb)->tx.in_flight = inflight_prev +\n"
+        "\t\t\t\t\t\t tcp_skb_pcount(skb);\n"
+        "\t\t/* Set 2nd tx.in_flight with new 1st and 2nd pcounts: */\n"
+        "\t\tTCP_SKB_CB(buff)->tx.in_flight = inflight_prev +\n"
+        "\t\t\t\t\t\t tcp_skb_pcount(skb) +\n"
+        "\t\t\t\t\t\t tcp_skb_pcount(buff);\n"
+    )
+    if anchor not in o:
+        raise SystemExit("failed to locate tcp_fragment() pcount adjustment anchor in net/ipv4/tcp_output.c")
+    o = o.replace(anchor, anchor + block, 1)
+tcp_output.write_text(o, encoding="utf-8", newline="\n")
+PY
+      git -C "${COMMON_DIR}" add -- include/net/tcp.h net/ipv4/tcp_output.c || return 1
+      return 0
+      ;;
   esac
 
   return 1

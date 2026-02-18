@@ -1045,7 +1045,16 @@ grep -q 'bool is_ece;' "${TCP_H}" || fatal "missing rate_sample.is_ece in includ
 grep -q 'bool is_acking_tlp_retrans_seq;' "${TCP_H}" || fatal "missing rate_sample.is_acking_tlp_retrans_seq in include/net/tcp.h"
 grep -q 'TCP_CONG_WANTS_CE_EVENTS' "${TCP_H}" || fatal "missing TCP_CONG_WANTS_CE_EVENTS in include/net/tcp.h"
 grep -Eq 'void[[:space:]]+\(\*skb_marked_lost\)\(struct sock \*sk, const struct sk_buff \*skb\);' "${TCP_H}" || fatal "missing skb_marked_lost op in include/net/tcp.h"
-grep -Eq 'void[[:space:]]+\(\*cong_control\)\(struct sock \*sk, u32 ack, int flag, const struct rate_sample \*rs\);' "${TCP_H}" || fatal "missing new cong_control signature in include/net/tcp.h"
+python3 - "${TCP_H}" <<'PY' || fatal "missing new cong_control signature in include/net/tcp.h"
+from pathlib import Path
+import re
+import sys
+
+s = Path(sys.argv[1]).read_text(encoding="utf-8")
+pat = r'void\s+\(\*cong_control\)\(struct sock \*sk,\s*u32 ack,\s*int flag,\s*const struct rate_sample \*rs\);'
+if not re.search(pat, s, flags=re.S):
+    raise SystemExit(1)
+PY
 
 grep -q 'tlp_orig_data_app_limited' "${LINUX_TCP_H}" || fatal "missing tcp_sock.tlp_orig_data_app_limited in include/linux/tcp.h"
 grep -q 'fast_ack_mode' "${LINUX_TCP_H}" || fatal "missing tcp_sock.fast_ack_mode in include/linux/tcp.h"

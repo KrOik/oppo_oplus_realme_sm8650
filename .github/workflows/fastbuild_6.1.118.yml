@@ -689,7 +689,7 @@ jobs:
           grep -q 'is_acking_tlp_retrans_seq' include/net/tcp.h
           grep -q 'tlp_orig_data_app_limited' include/linux/tcp.h
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error net/ipv4/tcp_bbr.o net/ipv4/tcp_input.o net/ipv4/tcp_output.o net/ipv4/tcp_rate.o net/ipv4/tcp_plb.o net/ipv4/tcp_dctcp.o
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error net/ipv4/tcp_bbr.o net/ipv4/tcp_input.o net/ipv4/tcp_output.o net/ipv4/tcp_rate.o net/ipv4/tcp_plb.o net/ipv4/tcp_dctcp.o net/ipv4/bpf_tcp_ca.o
           echo "BBRv3 quick compile check passed"
 
       - name: 构建内核

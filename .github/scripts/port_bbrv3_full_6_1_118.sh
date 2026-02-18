@@ -1052,6 +1052,63 @@ icsk_h.write_text(s, encoding="utf-8", newline="\n")
 PY
 }
 
+sanitize_bpf_tcp_ca_for_6_1() {
+  local bpf_tcp_ca="${COMMON_DIR}/net/ipv4/bpf_tcp_ca.c"
+
+  [[ -f "${bpf_tcp_ca}" ]] || fatal "missing ${bpf_tcp_ca}"
+
+  python3 - "${bpf_tcp_ca}" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text(encoding="utf-8")
+orig = s
+
+# Some 6.1 trees can end up with a split extern declaration; normalize it.
+s = re.sub(
+    r'(?m)^(\s*extern\s+struct\s+bpf_struct_ops\s+bpf_tcp_congestion_ops)\s*$',
+    r'\1;',
+    s,
+    count=1,
+)
+
+# Guard against malformed declarations that may become "extern static ...".
+s = re.sub(
+    r'(?m)^\s*extern\s+static\s+u32\s+bpf_tcp_ca_tso_segs\(',
+    'static u32 bpf_tcp_ca_tso_segs(',
+    s,
+)
+s = re.sub(
+    r'(?m)^\s*extern\s*\n\s*static\s+u32\s+bpf_tcp_ca_tso_segs\(',
+    'static u32 bpf_tcp_ca_tso_segs(',
+    s,
+)
+s = re.sub(
+    r'(?m)^\s*__bpf_kfunc\s+static\s+u32\s+bpf_tcp_ca_tso_segs\(',
+    'static u32 bpf_tcp_ca_tso_segs(',
+    s,
+)
+s = re.sub(
+    r'(?m)^\s*__bpf_kfunc\s*\n\s*static\s+u32\s+bpf_tcp_ca_tso_segs\(',
+    'static u32 bpf_tcp_ca_tso_segs(',
+    s,
+)
+
+if "bpf_tcp_ca_tso_segs(" in s:
+    s, _ = re.subn(
+        r'static\s+u32\s+bpf_tcp_ca_tso_segs\s*\(\s*struct sock \*sk\s*(?:,\s*unsigned int mss_now)?\s*\)',
+        'static u32 bpf_tcp_ca_tso_segs(struct sock *sk, unsigned int mss_now)',
+        s,
+        count=1,
+    )
+
+if s != orig:
+    p.write_text(s, encoding="utf-8", newline="\n")
+PY
+}
+
 backport_kfunc_macros() {
   local btf_h="${COMMON_DIR}/include/linux/btf.h"
   local btf_ids_h="${COMMON_DIR}/include/linux/btf_ids.h"
@@ -1182,6 +1239,9 @@ backport_cong_control_api
 echo "[BBRv3] backporting inet_csk() container macro parity for 6.1"
 backport_inet_csk_container_macro
 
+echo "[BBRv3] sanitizing bpf_tcp_ca declarations for 6.1 parser compatibility"
+sanitize_bpf_tcp_ca_for_6_1
+
 echo "[BBRv3] validating compat results"
 TCP_BBR="${COMMON_DIR}/net/ipv4/tcp_bbr.c"
 TCP_H="${COMMON_DIR}/include/net/tcp.h"
@@ -1236,6 +1296,7 @@ fi
 grep -q 'sysctl_tcp_plb_enabled' "${NETNS_IPV4_H}" || fatal "missing PLB netns sysctls in include/net/netns/ipv4.h"
 grep -Eq 'tcp_plb\.o' "${MAKEFILE_IPV4}" || fatal "missing tcp_plb.o in net/ipv4/Makefile"
 grep -q 'tcp_plb_update_state' "${TCP_PLB_C}" || fatal "missing tcp_plb implementation"
+grep -Eq 'static[[:space:]]+u32[[:space:]]+bpf_tcp_ca_tso_segs[[:space:]]*\(struct sock \*sk,[[:space:]]*unsigned int mss_now\)' "${COMMON_DIR}/net/ipv4/bpf_tcp_ca.c" || fatal "missing normalized bpf_tcp_ca_tso_segs signature"
 grep -q 'RTAX_FEATURE_ECN_LOW' "${RTA_H}" || fatal "missing RTAX_FEATURE_ECN_LOW in rtnetlink uapi"
 grep -q 'TCPI_OPT_ECN_LOW' "${TCP_UAPI_H}" || fatal "missing TCPI_OPT_ECN_LOW in tcp uapi"
 grep -q 'bbr_inflight_hi' "${INET_DIAG_H}" || fatal "missing BBRv3 inet_diag fields"

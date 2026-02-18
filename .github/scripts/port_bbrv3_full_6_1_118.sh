@@ -846,6 +846,45 @@ PY
       git -C "${COMMON_DIR}" add -- include/net/inet_connection_sock.h include/net/tcp.h include/uapi/linux/inet_diag.h net/ipv4/Kconfig net/ipv4/tcp_bbr.c || return 1
       return 0
       ;;
+    795544cc00f0)
+      echo "[BBRv3] resolving known 3-way conflict for ${short_sha} with upstream-equivalent edits"
+      git -C "${COMMON_DIR}" checkout --ours -- include/uapi/linux/tcp.h net/ipv4/tcp.c || return 1
+      python3 - "${COMMON_DIR}" <<'PY' || return 1
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+uapi_tcp = root / "include/uapi/linux/tcp.h"
+tcp_c = root / "net/ipv4/tcp.c"
+
+h = uapi_tcp.read_text(encoding="utf-8")
+if "TCPI_OPT_ECN_LOW" not in h:
+    if "#define TCPI_OPT_USEC_TS\t64" in h:
+        marker = "#define TCPI_OPT_USEC_TS\t64 /* usec timestamps */\n"
+        h = h.replace(marker, marker + "#define TCPI_OPT_ECN_LOW\t128 /* Low-latency ECN enabled at conn init */\n", 1)
+    else:
+        marker = "#define TCPI_OPT_SYN_DATA\t32 /* SYN-ACK acked data in SYN sent or rcvd */\n"
+        if marker not in h:
+            raise SystemExit("failed to locate TCPI_OPT_SYN_DATA in include/uapi/linux/tcp.h")
+        h = h.replace(marker, marker + "#define TCPI_OPT_ECN_LOW\t128 /* Low-latency ECN enabled at conn init */\n", 1)
+uapi_tcp.write_text(h, encoding="utf-8", newline="\n")
+
+c = tcp_c.read_text(encoding="utf-8")
+if "info->tcpi_options |= TCPI_OPT_ECN_LOW;" not in c:
+    anchor = "\tif (tp->ecn_flags & TCP_ECN_SEEN)\n\t\tinfo->tcpi_options |= TCPI_OPT_ECN_SEEN;\n"
+    if anchor not in c:
+        raise SystemExit("failed to locate TCPI_OPT_ECN_SEEN export in net/ipv4/tcp.c")
+    c = c.replace(
+        anchor,
+        anchor + "\tif (tp->ecn_flags & TCP_ECN_LOW)\n\t\tinfo->tcpi_options |= TCPI_OPT_ECN_LOW;\n",
+        1,
+    )
+tcp_c.write_text(c, encoding="utf-8", newline="\n")
+PY
+      git -C "${COMMON_DIR}" add -- include/uapi/linux/tcp.h net/ipv4/tcp.c || return 1
+      return 0
+      ;;
   esac
 
   return 1
